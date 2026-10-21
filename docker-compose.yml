@@ -1,0 +1,34 @@
+services:
+  galene:
+    build: .
+    command: ["-insecure", "-turn", ""]
+    ports: 
+      - 8443:8443
+    volumes:
+      - ./groups:/app/groups
+      - ./data:/app/data
+    restart: unless-stopped
+
+  turn-creds:
+    image: alpine:3.20
+    environment:
+      TURN_KEY_ID: ${TURN_KEY_ID}
+      TURN_KEY_API_TOKEN: ${TURN_KEY_API_TOKEN}
+    volumes:
+      - ./data:/data
+    command:
+      - sh
+      - -c
+      - |
+        apk add --no-cache curl jq
+        while true; do
+          curl -fsS "https://rtc.live.cloudflare.com/v1/turn/keys/$$TURN_KEY_ID/credentials/generate-ice-servers" \
+            -H "Authorization: Bearer $$TURN_KEY_API_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d '{"ttl": 86400}' \
+          | jq '.iceServers | map(.urls |= map(select(test(":53([?]|$$)") | not)))' \
+            > /data/ice-servers.json.tmp \
+          && mv /data/ice-servers.json.tmp /data/ice-servers.json
+          sleep 21600
+        done
+    restart: unless-stopped
