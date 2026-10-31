@@ -1052,6 +1052,99 @@ func pushDownConn(c *webClient, id string, up conn.Up, tracks []conn.UpTrack, re
 			}
 		}
 		requested, limitSid = requestedTracks(c, req, tracks)
+
+		// Filter the tracks we show based on the status of the requester client
+
+		removeTrackType := func(tracks []conn.UpTrack, kind webrtc.RTPCodecType) []conn.UpTrack {
+			filtered := []conn.UpTrack{}
+			for _, track := range tracks {
+				if track.Kind() != kind {
+					filtered = append(filtered, track)
+				}
+			}
+			return filtered
+		}
+
+		upUserId, _ := up.User()
+		upClient := c.group.GetClient(upUserId)
+		upRole, _ := upClient.Data()["role"].(string)
+		upAssignedTo, _ := upClient.Data()["assignedTo"].(string)
+		upAudioRoute, _ := upClient.Data()["audioRoute"].(string)
+
+		downRole, _ := c.Data()["role"].(string)
+		downAssignedTo, _ := c.Data()["assignedTo"].(string)
+		downAudioRoute, _ := c.Data()["audioRoute"].(string)
+
+		if downRole == "leader" {
+			// disregard all feeds from role=buddyDevice
+			if upRole == "buddyDevice" {
+				requested = []conn.UpTrack{}
+			}
+
+			// remote with buddy
+			if upRole == "remote" && upAssignedTo != "" {
+				requested = removeTrackType(requested, webrtc.RTPCodecTypeVideo)
+				// TODO: keep screenshare feeds
+
+				// disregard audio feeds if the buddy's audioRoute == local
+				buddyOfUpClient := c.group.GetClient(upAssignedTo)
+				if buddyOfUpClient == nil {
+					return fmt.Errorf("client %q has assignedTo=%q, but no such client in group %q",
+						upUserId, upAssignedTo, c.group.Name())
+				}
+
+				buddyOfUpClientAudioRoute, _ := buddyOfUpClient.Data()["audioRoute"].(string)
+
+				if buddyOfUpClientAudioRoute == "local" {
+					requested = []conn.UpTrack{}
+				}
+			}
+		}
+
+		if downRole == "buddyDevice" {
+			// only listen to buddy
+			if upUserId != downAssignedTo {
+				requested = []conn.UpTrack{}
+			}
+
+			// only play audio if in local audio routing (otherwise leader plays it)
+			if downAudioRoute != "local" {
+				requested = removeTrackType(requested, webrtc.RTPCodecTypeAudio)
+			}
+
+			// TODO: drop screenshare feeds
+		}
+
+		if downRole == "remote" {
+			notMyBuddy := upRole == "buddyDevice" && downAssignedTo != upUserId
+			if notMyBuddy {
+				requested = []conn.UpTrack{}
+			}
+
+			myBuddyButLeaderAudio := downAssignedTo == upUserId && upAudioRoute != "local"
+			if myBuddyButLeaderAudio {
+				requested = removeTrackType(requested, webrtc.RTPCodecTypeAudio)
+			}
+
+			// up is leader and client has buddy
+			if upRole == "leader" && downAssignedTo != "" {
+				requested = removeTrackType(requested, webrtc.RTPCodecTypeVideo)
+				//TODO: keep screenshare from leader
+
+				// client's buddy set audioRoute to local
+				buddyClient := c.group.GetClient(downAssignedTo)
+				if buddyClient == nil {
+					return fmt.Errorf("client %q has assignedTo=%q, but no such client in group %q",
+						c.Id(), downAssignedTo, c.group.Name())
+				}
+
+				buddyClientAudioRoute, _ := buddyClient.Data()["audioRoute"].(string)
+
+				if buddyClientAudioRoute == "local" {
+					requested = []conn.UpTrack{}
+				}
+			}
+		}
 	}
 
 	if replace != "" {
