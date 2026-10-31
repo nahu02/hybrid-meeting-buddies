@@ -145,6 +145,40 @@ type closeMessage struct {
 	data []byte
 }
 
+// setData merges input intp the clients data.
+// Must be called from c's goroutine
+func (c *webClient) setData(data map[string]interface{}) {
+	if c.group == nil {
+		return
+	}
+	if c.data == nil {
+		c.data = make(map[string]interface{})
+	}
+	for k, v := range data {
+		if v == nil {
+			delete(c.data, k)
+		} else {
+			c.data[k] = v
+		}
+	}
+	id := c.Id()
+	user := c.Username()
+	perms := c.Permissions()
+	data = c.Data()
+	g := c.Group()
+
+	go func(clients []group.Client) {
+		for _, cc := range clients {
+			cc.PushClient(
+				g.Name(), "change",
+				id, user, perms, data,
+			)
+		}
+	}(g.GetClients(nil))
+
+	rerouteGroup(g)
+}
+
 func getUpConn(c *webClient, id string) *rtpUpConnection {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -937,6 +971,10 @@ type kickAction struct {
 	message  string
 }
 
+type setDataAction struct {
+	data map[string]interface{}
+}
+
 var errEmptyId = group.ProtocolError("empty id")
 
 func remove(v string, l []string) []string {
@@ -1054,97 +1092,12 @@ func pushDownConn(c *webClient, id string, up conn.Up, tracks []conn.UpTrack, re
 		requested, limitSid = requestedTracks(c, req, tracks)
 
 		// Filter the tracks we show based on the status of the requester client
-
-		removeTrackType := func(tracks []conn.UpTrack, kind webrtc.RTPCodecType) []conn.UpTrack {
-			filtered := []conn.UpTrack{}
-			for _, track := range tracks {
-				if track.Kind() != kind {
-					filtered = append(filtered, track)
-				}
-			}
-			return filtered
+		filtered, err := filterTracksByRoles(up, c, requested)
+		if err != nil {
+			log.Printf("Track filtering: %v", err)
 		}
+		requested = filtered
 
-		upUserId, _ := up.User()
-		upClient := c.group.GetClient(upUserId)
-		upRole, _ := upClient.Data()["role"].(string)
-		upAssignedTo, _ := upClient.Data()["assignedTo"].(string)
-		upAudioRoute, _ := upClient.Data()["audioRoute"].(string)
-
-		downRole, _ := c.Data()["role"].(string)
-		downAssignedTo, _ := c.Data()["assignedTo"].(string)
-		downAudioRoute, _ := c.Data()["audioRoute"].(string)
-
-		if downRole == "leader" {
-			// disregard all feeds from role=buddyDevice
-			if upRole == "buddyDevice" {
-				requested = []conn.UpTrack{}
-			}
-
-			// remote with buddy
-			if upRole == "remote" && upAssignedTo != "" {
-				requested = removeTrackType(requested, webrtc.RTPCodecTypeVideo)
-				// TODO: keep screenshare feeds
-
-				// disregard audio feeds if the buddy's audioRoute == local
-				buddyOfUpClient := c.group.GetClient(upAssignedTo)
-				if buddyOfUpClient == nil {
-					return fmt.Errorf("client %q has assignedTo=%q, but no such client in group %q",
-						upUserId, upAssignedTo, c.group.Name())
-				}
-
-				buddyOfUpClientAudioRoute, _ := buddyOfUpClient.Data()["audioRoute"].(string)
-
-				if buddyOfUpClientAudioRoute == "local" {
-					requested = []conn.UpTrack{}
-				}
-			}
-		}
-
-		if downRole == "buddyDevice" {
-			// only listen to buddy
-			if upUserId != downAssignedTo {
-				requested = []conn.UpTrack{}
-			}
-
-			// only play audio if in local audio routing (otherwise leader plays it)
-			if downAudioRoute != "local" {
-				requested = removeTrackType(requested, webrtc.RTPCodecTypeAudio)
-			}
-
-			// TODO: drop screenshare feeds
-		}
-
-		if downRole == "remote" {
-			notMyBuddy := upRole == "buddyDevice" && downAssignedTo != upUserId
-			if notMyBuddy {
-				requested = []conn.UpTrack{}
-			}
-
-			myBuddyButLeaderAudio := downAssignedTo == upUserId && upAudioRoute != "local"
-			if myBuddyButLeaderAudio {
-				requested = removeTrackType(requested, webrtc.RTPCodecTypeAudio)
-			}
-
-			// up is leader and client has buddy
-			if upRole == "leader" && downAssignedTo != "" {
-				requested = removeTrackType(requested, webrtc.RTPCodecTypeVideo)
-				//TODO: keep screenshare from leader
-
-				// client's buddy set audioRoute to local
-				buddyClient := c.group.GetClient(downAssignedTo)
-				if buddyClient == nil {
-					return fmt.Errorf("client %q has assignedTo=%q, but no such client in group %q",
-						c.Id(), downAssignedTo, c.group.Name())
-				}
-
-				buddyClientAudioRoute, _ := buddyClient.Data()["audioRoute"].(string)
-
-				if buddyClientAudioRoute == "local" {
-					requested = []conn.UpTrack{}
-				}
-			}
-		}
 	}
 
 	if replace != "" {
@@ -1185,6 +1138,113 @@ func pushDownConn(c *webClient, id string, up conn.Up, tracks []conn.UpTrack, re
 	}
 	replace = ""
 	return nil
+}
+
+func filterTracksByRoles(up conn.Up, c *webClient, requested []conn.UpTrack) ([]conn.UpTrack, error) {
+	removeTrackType := func(tracks []conn.UpTrack, kind webrtc.RTPCodecType) []conn.UpTrack {
+		filtered := []conn.UpTrack{}
+		for _, track := range tracks {
+			if track.Kind() != kind {
+				filtered = append(filtered, track)
+			}
+		}
+		return filtered
+	}
+
+	upUserId, _ := up.User()
+	upClient := c.group.GetClient(upUserId)
+	if upClient == nil {
+		return nil, fmt.Errorf("client with ID %q could not be found in group %q", upUserId, c.group.Name())
+	}
+
+	// TODO: lock upClient.data while reading it, so no RoW race possible here.
+	upClientData := upClient.Data()
+	upRole, _ := upClientData["role"].(string)
+	upAssignedTo, _ := upClientData["assignedTo"].(string)
+	upAudioRoute, _ := upClientData["audioRoute"].(string)
+
+	downRole, _ := c.Data()["role"].(string)
+	downAssignedTo, _ := c.Data()["assignedTo"].(string)
+	downAudioRoute, _ := c.Data()["audioRoute"].(string)
+
+	if downRole == "leader" {
+		// disregard all feeds from role=buddyDevice
+		if upRole == "buddyDevice" {
+			requested = []conn.UpTrack{}
+		}
+
+		// remote with buddy
+		if upRole == "remote" && upAssignedTo != "" {
+			requested = removeTrackType(requested, webrtc.RTPCodecTypeVideo)
+			// TODO: keep screenshare feeds
+
+			// disregard audio feeds if the buddy's audioRoute == local
+			buddyOfUpClient := c.group.GetClient(upAssignedTo)
+			if buddyOfUpClient == nil {
+				return nil, fmt.Errorf("client %q has assignedTo=%q, but no such client in group %q",
+					upUserId, upAssignedTo, c.group.Name())
+			}
+
+			buddyOfUpClientAudioRoute, _ := buddyOfUpClient.Data()["audioRoute"].(string)
+
+			if buddyOfUpClientAudioRoute == "local" {
+				requested = []conn.UpTrack{}
+			}
+		}
+	}
+
+	if downRole == "buddyDevice" {
+		// only listen to buddy
+		if upUserId != downAssignedTo {
+			requested = []conn.UpTrack{}
+		}
+
+		// only play audio if in local audio routing (otherwise leader plays it)
+		if downAudioRoute != "local" {
+			requested = removeTrackType(requested, webrtc.RTPCodecTypeAudio)
+		}
+
+		// TODO: drop screenshare feeds
+	}
+
+	if downRole == "remote" {
+		notMyBuddy := upRole == "buddyDevice" && downAssignedTo != upUserId
+		if notMyBuddy {
+			requested = []conn.UpTrack{}
+		}
+
+		myBuddyButLeaderAudio := downAssignedTo == upUserId && upAudioRoute != "local"
+		if myBuddyButLeaderAudio {
+			requested = removeTrackType(requested, webrtc.RTPCodecTypeAudio)
+		}
+
+		// up is leader and client has buddy
+		if upRole == "leader" && downAssignedTo != "" {
+			requested = removeTrackType(requested, webrtc.RTPCodecTypeVideo)
+			//TODO: keep screenshare from leader
+
+			// client's buddy set audioRoute to local
+			buddyClient := c.group.GetClient(downAssignedTo)
+			if buddyClient == nil {
+				return nil, fmt.Errorf("client %q has assignedTo=%q, but no such client in group %q",
+					c.Id(), downAssignedTo, c.group.Name())
+			}
+
+			buddyClientAudioRoute, _ := buddyClient.Data()["audioRoute"].(string)
+
+			if buddyClientAudioRoute == "local" {
+				requested = []conn.UpTrack{}
+			}
+		}
+	}
+	return requested, nil
+}
+
+// rerun track filtering for every client
+func rerouteGroup(g *group.Group) {
+	for _, cc := range g.GetClients(nil) {
+		requestConns(cc, g, "")
+	}
 }
 
 func handleAction(c *webClient, a any) error {
@@ -1307,6 +1367,7 @@ func handleAction(c *webClient, a any) error {
 					return err
 				}
 			}
+			rerouteGroup(g)
 		}
 	case changePermissionsAction:
 		switch a.kind {
@@ -1377,6 +1438,8 @@ func handleAction(c *webClient, a any) error {
 		return group.KickError{
 			a.id, a.username, a.message,
 		}
+	case setDataAction:
+		c.setData(a.data)
 	default:
 		log.Printf("unexpected action %T", a)
 		return errors.New("unexpected action")
@@ -1419,7 +1482,24 @@ func leaveGroup(c *webClient) {
 		}
 	}
 
+	// if a client that is assignedTo someone leaves, their buddy needs unassigning
+	assignedTo, _ := c.Data()["assignedTo"].(string)
+
+	if assignedTo != "" {
+		buddy := c.group.GetClient(assignedTo)
+		if buddy == nil {
+			log.Printf("As client %q was leaving, its assigned buddy %q couldn't be found", c.Id(), assignedTo)
+		} else {
+			if wc, ok := buddy.(*webClient); ok {
+				wc.action(setDataAction{map[string]interface{}{"assignedTo": nil}})
+			}
+		}
+	}
+
 	group.DelClient(c)
+
+	rerouteGroup(c.group)
+
 	c.permissions = nil
 	c.data = nil
 	c.requested = make(map[string][]string)
@@ -2056,28 +2136,7 @@ func handleClientMessage(c *webClient, m clientMessage) error {
 					"Bad value in setdata",
 				))
 			}
-			if c.data == nil {
-				c.data = make(map[string]interface{})
-			}
-			for k, v := range data {
-				if v == nil {
-					delete(c.data, k)
-				} else {
-					c.data[k] = v
-				}
-			}
-			id := c.Id()
-			user := c.Username()
-			perms := c.Permissions()
-			data = c.Data()
-			go func(clients []group.Client) {
-				for _, cc := range clients {
-					cc.PushClient(
-						g.Name(), "change",
-						id, user, perms, data,
-					)
-				}
-			}(g.GetClients(nil))
+			c.setData(data)
 		default:
 			return group.UserError("unknown user action")
 		}
