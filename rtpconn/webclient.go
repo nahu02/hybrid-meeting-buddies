@@ -1141,12 +1141,32 @@ func pushDownConn(c *webClient, id string, up conn.Up, tracks []conn.UpTrack, re
 }
 
 func filterTracksByRoles(up conn.Up, c *webClient, requested []conn.UpTrack) ([]conn.UpTrack, error) {
-	removeTrackType := func(tracks []conn.UpTrack, kind webrtc.RTPCodecType) []conn.UpTrack {
+	type trackType int
+	const (
+		audio trackType = 1 << iota
+		camera
+		screenshare
+	)
+
+	filterTrackType := func(tracks []conn.UpTrack, upLabel string, keepType trackType) []conn.UpTrack {
 		filtered := []conn.UpTrack{}
+
+		shouldKeep := func(track conn.UpTrack) bool {
+			isScreenshare := upLabel == "screenshare" // both audio and video of screenshare
+			isAudio := track.Kind() == webrtc.RTPCodecTypeAudio && !isScreenshare
+			isCamera := track.Kind() == webrtc.RTPCodecTypeVideo && upLabel == "camera"
+
+			return (keepType&audio != 0 && isAudio ||
+				keepType&camera != 0 && isCamera ||
+				keepType&screenshare != 0 && isScreenshare)
+
+		}
+
 		for _, track := range tracks {
-			if track.Kind() != kind {
+			if shouldKeep(track) {
 				filtered = append(filtered, track)
 			}
+
 		}
 		return filtered
 	}
@@ -1158,6 +1178,7 @@ func filterTracksByRoles(up conn.Up, c *webClient, requested []conn.UpTrack) ([]
 	}
 
 	// TODO: lock upClient.data while reading it, so no RoW race possible here.
+	upClientLabel := up.Label()
 	upClientData := upClient.Data()
 	upRole, _ := upClientData["role"].(string)
 	upAssignedTo, _ := upClientData["assignedTo"].(string)
@@ -1175,8 +1196,7 @@ func filterTracksByRoles(up conn.Up, c *webClient, requested []conn.UpTrack) ([]
 
 		// remote with buddy
 		if upRole == "remote" && upAssignedTo != "" {
-			requested = removeTrackType(requested, webrtc.RTPCodecTypeVideo)
-			// TODO: keep screenshare feeds
+			requested = filterTrackType(requested, upClientLabel, audio|screenshare)
 
 			// disregard audio feeds if the buddy's audioRoute == local
 			buddyOfUpClient := c.group.GetClient(upAssignedTo)
@@ -1188,7 +1208,7 @@ func filterTracksByRoles(up conn.Up, c *webClient, requested []conn.UpTrack) ([]
 			buddyOfUpClientAudioRoute, _ := buddyOfUpClient.Data()["audioRoute"].(string)
 
 			if buddyOfUpClientAudioRoute == "local" {
-				requested = []conn.UpTrack{}
+				requested = filterTrackType(requested, upClientLabel, screenshare)
 			}
 		}
 	}
@@ -1199,29 +1219,29 @@ func filterTracksByRoles(up conn.Up, c *webClient, requested []conn.UpTrack) ([]
 			requested = []conn.UpTrack{}
 		}
 
+		// drop screenshare from buddy
+		requested = filterTrackType(requested, upClientLabel, audio|camera)
+		
 		// only play audio if in local audio routing (otherwise leader plays it)
 		if downAudioRoute != "local" {
-			requested = removeTrackType(requested, webrtc.RTPCodecTypeAudio)
+			requested = filterTrackType(requested, upClientLabel, camera)
 		}
-
-		// TODO: drop screenshare feeds
 	}
 
 	if downRole == "remote" {
-		notMyBuddy := upRole == "buddyDevice" && downAssignedTo != upUserId
-		if notMyBuddy {
+		buddyButNotMine := upRole == "buddyDevice" && downAssignedTo != upUserId
+		if buddyButNotMine {
 			requested = []conn.UpTrack{}
 		}
 
 		myBuddyButLeaderAudio := downAssignedTo == upUserId && upAudioRoute != "local"
 		if myBuddyButLeaderAudio {
-			requested = removeTrackType(requested, webrtc.RTPCodecTypeAudio)
+			requested = filterTrackType(requested, upClientLabel, camera)
 		}
 
 		// up is leader and client has buddy
 		if upRole == "leader" && downAssignedTo != "" {
-			requested = removeTrackType(requested, webrtc.RTPCodecTypeVideo)
-			//TODO: keep screenshare from leader
+			requested = filterTrackType(requested, upClientLabel, audio|screenshare)
 
 			// client's buddy set audioRoute to local
 			buddyClient := c.group.GetClient(downAssignedTo)
@@ -1233,7 +1253,7 @@ func filterTracksByRoles(up conn.Up, c *webClient, requested []conn.UpTrack) ([]
 			buddyClientAudioRoute, _ := buddyClient.Data()["audioRoute"].(string)
 
 			if buddyClientAudioRoute == "local" {
-				requested = []conn.UpTrack{}
+				requested = filterTrackType(requested, upClientLabel, screenshare)
 			}
 		}
 	}
