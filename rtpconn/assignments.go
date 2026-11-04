@@ -6,9 +6,11 @@ import (
 	"github.com/jech/galene/group"
 )
 
-// assignmentControllerURL is the base URL of the external assignment
-// controller (the thing that runs the minigames).  Hardcoded for now.
-const assignmentControllerURL = "https://example.com"
+// assignmentControllerURL is the base of the assignment controller, the
+// page that runs the minigames.  It is served by our own web server
+// (see webserver.assignmentHandler); the URL is relative, so it resolves
+// against the origin of the server that sent the openUrl message.
+const assignmentControllerURL = "/assignment"
 
 // OpenURL asks the client's browser to offer opening u in a new tab, by
 // sending it a usermessage of kind "openUrl".

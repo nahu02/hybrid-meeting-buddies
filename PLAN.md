@@ -50,6 +50,12 @@ role from the login form instead of the URL.
 
 ## Phase 1 — Assignment interface page (empty for now)
 
+*Status: implemented — `static/assignment.html`,
+`assignmentHandler` in `webserver/webserver.go`, relative
+`assignmentControllerURL` in `rtpconn/assignments.go`, unit tests in
+`rtpconn/assignments_test.go` and `webserver/webserver_test.go`
+(`TestAssignmentURL`, `TestAssignmentHandler`).*
+
 - Add `static/assignment.html`: a minimal placeholder page.  This is
   where the assignment minigames will live later.
 - Add an HTTP route in `webserver/webserver.go`, mirroring

@@ -42,6 +42,7 @@ func Serve(address string, dataDir string) error {
 	}
 	http.Handle("/", &fileHandler{staticRoot})
 	http.HandleFunc("/group/", groupHandler)
+	http.HandleFunc("/assignment/", assignmentHandler)
 	http.HandleFunc("/recordings",
 		func(w http.ResponseWriter, r *http.Request) {
 			http.Redirect(w, r,
@@ -382,6 +383,24 @@ func groupHandler(w http.ResponseWriter, r *http.Request) {
 	status := g.Status(false, nil)
 	cspHeader(w, status.AuthServer)
 	serveFile(w, r, staticRoot, "galene.html")
+}
+
+// assignmentHandler serves the assignment controller page.  The page is
+// the same for every participant; it reads the group name and the
+// participant id from its own URL (/assignment/<group>/<id>?role=<role>).
+func assignmentHandler(w http.ResponseWriter, r *http.Request) {
+	if redirect(w, r) {
+		return
+	}
+
+	name := parseGroupName("/assignment/", r.URL.Path)
+	if name == "" {
+		notFound(w)
+		return
+	}
+
+	cspHeader(w, "")
+	serveFile(w, r, staticRoot, "assignment.html")
 }
 
 func baseURL(r *http.Request) (*url.URL, error) {

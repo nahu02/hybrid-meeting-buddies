@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -236,5 +237,41 @@ func TestObfuscate(t *testing.T) {
 	_, err = obfuscate("toto")
 	if err == nil {
 		t.Errorf("obfuscate: no errror")
+	}
+}
+
+func TestAssignmentHandler(t *testing.T) {
+	root, err := os.OpenRoot("../static")
+	if err != nil {
+		t.Fatalf("OpenRoot: %v", err)
+	}
+	saved := staticRoot
+	staticRoot = root
+	defer func() { staticRoot = saved }()
+
+	for _, p := range []string{
+		"/assignment/test/abc?role=remote",
+		"/assignment/test/",
+	} {
+		w := httptest.NewRecorder()
+		r := httptest.NewRequest("GET", p, nil)
+		assignmentHandler(w, r)
+		if w.Code != http.StatusOK {
+			t.Errorf("GET %v: got %v, expected %v",
+				p, w.Code, http.StatusOK)
+		}
+	}
+
+	for _, p := range []string{
+		"/assignment/",
+		"/assignment/../foo",
+	} {
+		w := httptest.NewRecorder()
+		r := httptest.NewRequest("GET", p, nil)
+		assignmentHandler(w, r)
+		if w.Code != http.StatusNotFound {
+			t.Errorf("GET %v: got %v, expected %v",
+				p, w.Code, http.StatusNotFound)
+		}
 	}
 }
