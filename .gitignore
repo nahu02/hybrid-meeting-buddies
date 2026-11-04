@@ -6,4 +6,4 @@
 /static/**/*.d.ts
 /static/third-party/tasks-vision
 .env
-
+**/AGENTS.md
