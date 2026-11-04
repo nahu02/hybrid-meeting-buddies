@@ -1854,6 +1854,14 @@ func handleClientMessage(c *webClient, m clientMessage) error {
 			if err != nil {
 				log.Printf("broadcast(clearchat): %v", err)
 			}
+		case "startAssignments":
+			// Only the leader may start assignments.  The role is
+			// self-declared in the join data (?role=leader).
+			role, _ := c.Data()["role"].(string)
+			if role != "leader" {
+				return c.error(group.UserError("not authorised"))
+			}
+			startAssignments(g)
 		case "lock", "unlock":
 			if !slices.Contains(c.permissions, "op") {
 				return c.error(group.UserError("not authorised"))

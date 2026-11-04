@@ -58,6 +58,13 @@ let pwAuth = false;
 let token = null;
 
 /**
+ * The query parameters of the page URL, sent to the server as join data.
+ *
+ * @type {Record<string,any>}
+ */
+let queryData = {};
+
+/**
  * The state of the login automaton.
  *
  * @type {"probing" | "need-username" | "success"}
@@ -364,7 +371,7 @@ async function join() {
     }
 
     try {
-        await serverConnection.join(group, username, credentials);
+        await serverConnection.join(group, username, credentials, queryData);
     } catch(e) {
         console.error(e);
         displayError(e);
@@ -466,6 +473,11 @@ getButtonElement('presentbutton').onclick = async function(e) {
     }
 };
 
+getButtonElement('startassignmentsbutton').onclick = function(e) {
+    e.preventDefault();
+    serverConnection.groupAction('startAssignments');
+};
+
 getButtonElement('unpresentbutton').onclick = function(e) {
     e.preventDefault();
     closeUpMedia('camera');
@@ -518,6 +530,10 @@ function setButtonsVisibility() {
     setVisibility('unpresentbutton', local);
 
     setVisibility('mutebutton', !connected || canPresent);
+
+    // only the leader (role taken from the page URL) can start assignments
+    setVisibility('startassignmentsbutton',
+                  !!connected && queryData.role === 'leader');
 
     // allow multiple shared documents
     setVisibility('sharebutton', canShare);
@@ -2633,6 +2649,27 @@ function gotUserMessage(id, dest, username, time, privileged, kind, error, messa
         displayError(`${from} said: ${message}`, kind);
         break;
     }
+    case 'openUrl': {
+        if(!privileged) {
+            console.error(`Got unprivileged message of kind ${kind}`);
+            return;
+        }
+        // Browsers block window.open() when it isn't triggered by a user
+        // click, so we show a persistent toast: clicking it (a real user
+        // gesture) follows the link in a new tab.
+        /** @ts-ignore */
+        Toastify({
+            text: 'Tap here to join the assignment',
+            destination: '' + message,
+            newWindow: true,
+            duration: -1,
+            close: true,
+            position: 'center',
+            gravity: 'top',
+            className: 'info',
+        }).showToast();
+        break;
+    }
     case 'mute': {
         if(!privileged) {
             console.error(`Got unprivileged message of kind ${kind}`);
@@ -4097,8 +4134,11 @@ async function start() {
     await setMediaChoices(false);
     reflectSettings();
 
-    if(parms.has('token'))
+    if(parms.has('token')) {
         token = parms.get('token');
+        parms.delete('token'); // don't broadcast the login token as user data
+    }
+    queryData = Object.fromEntries(parms);
 
     if(token) {
         await serverConnect();
