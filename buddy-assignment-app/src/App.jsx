@@ -5,15 +5,6 @@ import { compareParticipants } from "./algorithms/matching";
 import { PARTICIPANTS_COUNT, GLOVE_MODEL_PATH } from "./config";
 import "./App.css";
 
-const SAMPLE_ANSWERS = [
-  "I love going out and partying with friends",
-  "I enjoy clubbing and listening to music",
-  "I prefer staying home and reading books",
-  "I like hiking outdoors and exploring nature",
-  "I enjoy playing video games and coding",
-  "I love cooking good food and watching movies"
-];
-
 function createParticipants(count) {
   const safeCount = Math.max(2, Number(count) || 2);
   const list = [];
@@ -21,7 +12,6 @@ function createParticipants(count) {
     list.push({
       id: i,
       name: `Participant ${i}`,
-      answer: SAMPLE_ANSWERS[i - 1] || ""
     });
   }
   return list;
@@ -81,7 +71,7 @@ function App() {
       <header className="app-header">
         <h1>Find Your Meeting Buddy</h1>
         <p className="subtitle">
-          Answer the questions below and we'll automatically match you with your best buddy!
+          Answer the questions below and we'll automatically match you with your buddy!
         </p>
       </header>
 

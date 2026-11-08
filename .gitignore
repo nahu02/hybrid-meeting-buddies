@@ -6,9 +6,9 @@
 /static/**/*.d.ts
 /static/third-party/tasks-visionnv.*
 
-/assignment-app/buddy-assignment/node_modules/
-/assignment-app/buddy-assignment/dist/
-/assignment-app/buddy-assignment/public/models/*
-!/assignment-app/buddy-assignment/public/models/.gitkeep
+/buddy-assignment-app/node_modules/
+/buddy-assignment-app/dist/
+/buddy-assignment-app/public/models/*
+!/buddy-assignment-app/public/models/.gitkeep
 
 
