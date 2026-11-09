@@ -11,7 +11,7 @@ function createQuestions(count) {
   for (let i = 1; i <= safeCount; i++) {
     list.push({
       id: i,
-      name: `Question ${i}`,
+      answer: ""
     });
   }
   return list;
@@ -24,136 +24,117 @@ const sampleQuestions =
     "What movie, book, or show have you enjoyed recently?"
   ]
 
-function createParticipants(count) {
-  const safeCount = Math.max(1, Number(count) || 2);
-  const list = [];
-  for (let i = 1; i <= safeCount; i++) {
-    list.push({
-      id: i,
-      name: `Participant ${i}`,
-      answers: {}
-    });
-  }
-  return list;
-}
-
 function App() {
-  const [embeddings, setEmbeddings] = useState(null);
-  const [loadingModel, setLoadingModel] = useState(true);
+  // const [embeddings, setEmbeddings] = useState(null);
+  // const [loadingModel, setLoadingModel] = useState(true);
 
   const [spell, setSpell] = useState(null);
 
   const [questions, setQuestions] = useState(() => createQuestions(QUESTIONS_COUNT));
-  const [participants, setParticipants] = useState(() => createParticipants(PARTICIPANTS_COUNT));
-  const [matchResult, setMatchResult] = useState([]);
+  // const [matchResult, setMatchResult] = useState([]);
+  const [submitted, setSubmitted] = useState(false);
 
   // Initialize GloVe model and spellchecker on mount
-  useEffect(() => {
-    async function init() {
-      // 1. Initialize spellchecker
-      try {
-        const checker = await loadSpellChecker(import.meta.env.BASE_URL);
-        setSpell(checker);
-      } catch (err) {
-        console.warn("Could not load spellchecker dictionary:", err);
-      }
+  // useEffect(() => {
+  //   async function init() {
+  //     // 1. Initialize spellchecker
+  //     try {
+  //       const checker = await loadSpellChecker(import.meta.env.BASE_URL);
+  //       setSpell(checker);
+  //     } catch (err) {
+  //       console.warn("Could not load spellchecker dictionary:", err);
+  //     }
 
-      // 2. Load local GloVe embeddings file in the background
-      try {
-        setLoadingModel(true);
-        const glove = await loadGloveFromUrl(GLOVE_MODEL_PATH);
-        setEmbeddings(glove);
-      } catch (err) {
-        console.error("Failed to load embeddings:", err);
-      } finally {
-        setLoadingModel(false);
-      }
-    }
+  //     // 2. Load local GloVe embeddings file in the background
+  //     try {
+  //       setLoadingModel(true);
+  //       const glove = await loadGloveFromUrl(GLOVE_MODEL_PATH);
+  //       setEmbeddings(glove);
+  //     } catch (err) {
+  //       console.error("Failed to load embeddings:", err);
+  //     } finally {
+  //       setLoadingModel(false);
+  //     }
+  //   }
 
-    init();
-  }, []);
+  //   init();
+  // }, []);
 
   // Update participant answer
-  function updateAnswer(id, questionId, value) {
-    setParticipants((prev) =>
-      prev.map((p) => {
-        if (p.id !== id) return p;
-
-        return {
-          ...p,
-          answers: {
-            ...p.answers,
-            [questionId]: value
-          }
-        };
-      })
-    );
+  function updateAnswer(questionId, value) {
+    setQuestions((prev) =>
+      prev.map((q) =>
+        q.id === questionId ? { ...q, answer: value } : q));
   }
 
   // Execute matching using local GloVe embeddings
-  function handleFindMatches() {
-    if (!embeddings) return;
-    const result = compareParticipants(participants, questions, embeddings, spell);
-    setMatchResult(result);
+  // function handleFindMatches() {
+  //   if (!embeddings) return;
+  //   const result = compareParticipants(participants, questions, embeddings, spell);
+  //   setMatchResult(result);
+  // }
+
+  function convertAnswersToJSON() {
+    const jsonData = JSON.stringify(questions, null, 2);
+
+    console.log("Participants as JSON:", jsonData);
   }
 
   return (
     <div className="app-container">
-      <header className="app-header">
-        <h1>Find Your Meeting Buddy</h1>
-        <p className="subtitle">
-          Answer the questions below and we'll automatically match you with your buddy!
-        </p>
-      </header>
+      {!submitted ? (
+        <section className="main-section">
+          <header className="app-header">
+            <h1>Find Your Meeting Buddy</h1>
+            <p className="subtitle">
+              Answer the questions below and we'll automatically match you with your buddy!
+            </p>
+          </header>
 
-      {/* Participants Input Section */}
-      <section className="main-section">
-
-        <div className="questions-list">
-          {questions.map((q, questionIndex) => (
-            <div key={q.id} className="question-card">
-              <h3>{`Question ${questionIndex + 1}`}</h3>
-              <h4>{sampleQuestions[questionIndex]}</h4>
-
-              <div className="participants-list">
-                {participants.map((p) => (
-                  <div key={p.id} className="participant-card">
-                    <div className="participant-name">
-                      {p.name}
-                    </div>
-                    <textarea
-                      className="participant-answer-input"
-                      rows={1}
-                      value={p.answers?.[q.id] || ""}
-                      onChange={(e) =>
-                        updateAnswer(p.id, q.id, e.target.value)
-                      }
-                      placeholder="Enter answer"
-                    />
-                  </div>
-                ))}
-              </div>
+          {/* Answers Input Section */}
+          <section className="answers-section">
+            <div className="questions-list">
+              {questions.map((q, index) => (
+                <div key={q.id} className="question-card">
+                  <h3>{`Question ${index + 1}`}</h3>
+                  <h4>{sampleQuestions[index]}</h4>
+                  <textarea
+                    className="participant-answer-input"
+                    rows={3}
+                    value={q.answer}
+                    onChange={(e) => updateAnswer(q.id, e.target.value)}
+                    placeholder="Enter answer"
+                  />
+                </div>
+              ))}
             </div>
-          ))}
-        </div>
 
-        <div className="action-row">
-          <button
-            type="button"
-            className="btn btn-primary"
-            disabled={!embeddings || loadingModel}
-            onClick={handleFindMatches}
-          >
-            {loadingModel ? "Initializing..." : "Find Buddy Matches"}
-          </button>
-        </div>
-      </section>
+            <div className="action-row">
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={() => {
+                  convertAnswersToJSON();
+                  setSubmitted(true);
+                }}
+              >
+                Find Your Buddy!
+              </button>
+            </div>
+          </section>
+        </section>
+      ) : (
+        <section className="main-section waiting-section">
+          <h2>Your answers have been submitted!</h2>
+          <p>Please wait while we find your buddy.</p>
+        </section>
+      )}
 
       {/* Results Section */}
-      {matchResult && matchResult.assignedPairs && (
-        <section className="results-section">
-          {/* Suggested Buddy Assignments */}
-          <div className="assigned-pairs-card">
+      {/* {matchResult && matchResult.assignedPairs && (
+        <section className="results-section"> */}
+      {/* Suggested Buddy Assignments */}
+      {/* <div className="assigned-pairs-card">
             <h3>Suggested Buddy Assignments</h3>
             <p className="pairs-desc">
               Optimal buddy pairings based on answer similarity:
@@ -182,7 +163,7 @@ function App() {
             </div>
           </div>
         </section>
-      )}
+      )} */}
     </div>
   );
 }

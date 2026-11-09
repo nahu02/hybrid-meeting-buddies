@@ -150,17 +150,17 @@
   background: var(--accent);
   color: #fff;
   border-color: var(--accent);
+  margin-top: 15px;
   box-shadow: 0 4px 12px rgba(218, 41, 28, 0.25);
 }
 
-.btn-primary:hover:not(:disabled) {
-  opacity: 0.92;
+.btn-primary:hover {
+  opacity: 0.82;
   transform: translateY(-1px);
 }
 
-.btn-primary:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
+.btn-primary:active {
+  transform: scale(0.97);
 }
 
 .btn-secondary {

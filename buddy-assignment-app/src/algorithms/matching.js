@@ -49,8 +49,6 @@ export function compareParticipants(
     };
   });
 
-  console.log("Processed participants:", processedParticipants);
-
   // 2. Calculate overall similarity for every participant pair
   const matches = [];
 

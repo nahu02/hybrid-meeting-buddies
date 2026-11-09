@@ -1,7 +1,7 @@
 /**
  * Configuration for Buddy Assignment
  */
-export const PARTICIPANTS_COUNT = 4;
+export const PARTICIPANTS_COUNT = 1;
 
 export const QUESTIONS_COUNT = 3;
 
