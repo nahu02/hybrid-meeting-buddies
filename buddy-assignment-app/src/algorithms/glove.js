@@ -1,16 +1,14 @@
 /**
- * Stop words set from glove_test.py:
  * Words that don't influence the similarity result.
  */
 export const STOP_WORDS = new Set([
   "i", "me", "my", "the", "a", "an",
-  "is", "am", "are", "and", "or",
-  "to", "of", "in", "on", "like"
+  "am", "are", "and", "or",  "to", 
+  "of", "in", "on", "like", "enjoy"
 ]);
 
 /**
  * Parse text content of a GloVe embeddings file.
- * Each line: <word> <float_1> <float_2> ... <float_d>
  * @param {string} text
  * @returns {Map<string, Float32Array>}
  */
@@ -78,15 +76,6 @@ export async function loadGloveFromUrl(url, onProgress) {
 
 /**
  * Convert sentence into an average word vector.
- * Directly corresponds to sentence_vector in glove_test.py:
- *
- * def sentence_vector(sentence, embeddings):
- *     words = sentence.lower().split()
- *     words = [word.strip(".,!?") for word in words if word not in stop_words]
- *     vectors = [embeddings[word] for word in words if word in embeddings]
- *     if not vectors:
- *         return None
- *     return np.mean(vectors, axis=0)
  *
  * @param {string} sentence
  * @param {Map<string, Float32Array>} embeddings
@@ -139,16 +128,6 @@ export function sentenceVector(sentence, embeddings) {
 
 /**
  * Calculate cosine similarity between two vectors.
- * Directly corresponds to cosine_similarity in glove_test.py:
- *
- * def cosine_similarity(vec1, vec2):
- *     numerator = sum(a * b for a, b in zip(vec1, vec2))
- *     magnitude1 = sum(a * a for a in vec1) ** 0.5
- *     magnitude2 = sum(b * b for b in vec2) ** 0.5
- *     denominator = magnitude1 * magnitude2
- *     if denominator == 0:
- *         return 0
- *     return numerator / denominator
  *
  * @param {Float32Array | number[]} vec1
  * @param {Float32Array | number[]} vec2

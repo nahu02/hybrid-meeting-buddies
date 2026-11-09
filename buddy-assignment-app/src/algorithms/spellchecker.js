@@ -35,15 +35,6 @@ export async function loadSpellChecker(baseUrl = "") {
 
 /**
  * Check spelling of each word in a sentence and suggest/replace corrections.
- * Directly corresponds to check_spelling in glove_test.py:
- *
- * def check_spelling(sentence):
- *     words = sentence.split()
- *     corrected_words = []
- *     for word in words:
- *         corrected_word = spell.correction(word)
- *         corrected_words.append(corrected_word)
- *     return " ".join(corrected_words)
  *
  * @param {string} sentence
  * @param {any} spell

@@ -2,16 +2,36 @@ import { useState, useEffect } from "react";
 import { loadGloveFromUrl } from "./algorithms/glove";
 import { loadSpellChecker } from "./algorithms/spellchecker";
 import { compareParticipants } from "./algorithms/matching";
-import { PARTICIPANTS_COUNT, GLOVE_MODEL_PATH } from "./config";
+import { QUESTIONS_COUNT, PARTICIPANTS_COUNT, GLOVE_MODEL_PATH } from "./config";
 import "./App.css";
 
+function createQuestions(count) {
+  const safeCount = Math.max(1, Number(count) || 2);
+  const list = [];
+  for (let i = 1; i <= safeCount; i++) {
+    list.push({
+      id: i,
+      name: `Question ${i}`,
+    });
+  }
+  return list;
+}
+
+const sampleQuestions =
+  [
+    "What hobby or skill would you like to learn?",
+    "What superpower would you like to have?",
+    "What movie, book, or show have you enjoyed recently?"
+  ]
+
 function createParticipants(count) {
-  const safeCount = Math.max(2, Number(count) || 2);
+  const safeCount = Math.max(1, Number(count) || 2);
   const list = [];
   for (let i = 1; i <= safeCount; i++) {
     list.push({
       id: i,
       name: `Participant ${i}`,
+      answers: {}
     });
   }
   return list;
@@ -23,8 +43,9 @@ function App() {
 
   const [spell, setSpell] = useState(null);
 
+  const [questions, setQuestions] = useState(() => createQuestions(QUESTIONS_COUNT));
   const [participants, setParticipants] = useState(() => createParticipants(PARTICIPANTS_COUNT));
-  const [matchResult, setMatchResult] = useState(null);
+  const [matchResult, setMatchResult] = useState([]);
 
   // Initialize GloVe model and spellchecker on mount
   useEffect(() => {
@@ -52,17 +73,27 @@ function App() {
     init();
   }, []);
 
-  // Update participant details
-  function updateParticipant(id, field, value) {
+  // Update participant answer
+  function updateAnswer(id, questionId, value) {
     setParticipants((prev) =>
-      prev.map((p) => (p.id === id ? { ...p, [field]: value } : p))
+      prev.map((p) => {
+        if (p.id !== id) return p;
+
+        return {
+          ...p,
+          answers: {
+            ...p.answers,
+            [questionId]: value
+          }
+        };
+      })
     );
   }
 
   // Execute matching using local GloVe embeddings
   function handleFindMatches() {
     if (!embeddings) return;
-    const result = compareParticipants(participants, embeddings, spell);
+    const result = compareParticipants(participants, questions, embeddings, spell);
     setMatchResult(result);
   }
 
@@ -77,31 +108,31 @@ function App() {
 
       {/* Participants Input Section */}
       <section className="main-section">
-        <div className="section-header">
-          <div>
-            <h2>Participants &amp; Answers</h2>
-          </div>
-        </div>
 
-        <div className="participants-list">
-          {participants.map((p, index) => (
-            <div key={p.id} className="participant-card">
-              <div className="participant-top">
-                <input
-                  type="text"
-                  className="participant-name-input"
-                  value={p.name}
-                  onChange={(e) => updateParticipant(p.id, "name", e.target.value)}
-                  placeholder={`Participant ${index + 1}`}
-                />
+        <div className="questions-list">
+          {questions.map((q, questionIndex) => (
+            <div key={q.id} className="question-card">
+              <h3>{`Question ${questionIndex + 1}`}</h3>
+              <h4>{sampleQuestions[questionIndex]}</h4>
+
+              <div className="participants-list">
+                {participants.map((p) => (
+                  <div key={p.id} className="participant-card">
+                    <div className="participant-name">
+                      {p.name}
+                    </div>
+                    <textarea
+                      className="participant-answer-input"
+                      rows={1}
+                      value={p.answers?.[q.id] || ""}
+                      onChange={(e) =>
+                        updateAnswer(p.id, q.id, e.target.value)
+                      }
+                      placeholder="Enter answer"
+                    />
+                  </div>
+                ))}
               </div>
-              <textarea
-                className="participant-answer-input"
-                rows={2}
-                value={p.answer}
-                onChange={(e) => updateParticipant(p.id, "answer", e.target.value)}
-                placeholder="Enter answer"
-              />
             </div>
           ))}
         </div>
@@ -119,47 +150,37 @@ function App() {
       </section>
 
       {/* Results Section */}
-      {matchResult && (
+      {matchResult && matchResult.assignedPairs && (
         <section className="results-section">
-          {/* Top Match Highlight Banner */}
-          {matchResult.matches.length > 0 && matchResult.matches[0].canCompare && (
-            <div className="best-match-banner">
-              <div className="best-match-content">
-                <span className="best-match-title">Top Match</span>
-                <h3>
-                  {matchResult.matches[0].participant1} &amp; {matchResult.matches[0].participant2}
-                </h3>
-                <p>
-                  Compatibility: <strong>{matchResult.matches[0].percentage}%</strong>
-                </p>
-              </div>
-            </div>
-          )}
-
           {/* Suggested Buddy Assignments */}
-          {matchResult.assignedPairs && matchResult.assignedPairs.length > 0 && (
-            <div className="assigned-pairs-card">
-              <h3>Suggested Buddy Assignments</h3>
-              <p className="pairs-desc">
-                Optimal buddy pairings based on answer similarity:
-              </p>
-              <div className="pairs-list">
-                {matchResult.assignedPairs.map((pair, idx) => (
-                  <div key={idx} className="pair-pill">
-                    <span className="pair-names">
-                      <strong>{pair.participant1}</strong> &harr; <strong>{pair.participant2}</strong>
-                    </span>
-                    <span className="pair-score">{pair.percentage}% match</span>
-                  </div>
-                ))}
-                {matchResult.unmatched && matchResult.unmatched.length > 0 && (
-                  <div className="unmatched-note">
-                    Unpaired participant: {matchResult.unmatched.join(", ")}
-                  </div>
-                )}
-              </div>
+          <div className="assigned-pairs-card">
+            <h3>Suggested Buddy Assignments</h3>
+            <p className="pairs-desc">
+              Optimal buddy pairings based on answer similarity:
+            </p>
+            <div className="pairs-list">
+
+              {matchResult.assignedPairs.map((pair) => (
+                <div key={pair.id} className="pair-pill">
+
+                  <span className="pair-names">
+                    <strong>{pair.participant1}</strong> &harr; <strong>{pair.participant2}</strong>
+                  </span>
+
+                  <span className="pair-score">
+                    {pair.percentage}% match
+                  </span>
+
+                </div>
+              ))}
+
+              {matchResult.unmatched && matchResult.unmatched.length > 0 && (
+                <div className="unmatched-note">
+                  Unpaired participant: {matchResult.unmatched.join(", ")}
+                </div>
+              )}
             </div>
-          )}
+          </div>
         </section>
       )}
     </div>
