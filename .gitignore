@@ -4,6 +4,11 @@
 /data
 /groups/**/*.json
 /static/**/*.d.ts
-/static/third-party/tasks-vision
-.env
+/static/third-party/tasks-visionnv.*
+
+/buddy-assignment-app/node_modules/
+/buddy-assignment-app/dist/
+/buddy-assignment-app/public/models/*
+!/buddy-assignment-app/public/models/.gitkeep
+
 **/AGENTS.md
