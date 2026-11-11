@@ -116,10 +116,6 @@ func (client *Client) Kick(id string, user *string, message string) error {
 	return err
 }
 
-func (client *Client) AssignTo(_ string) error {
-	return errors.New("AssignTo must only be called on webclient clients")
-}
-
 func (client *Client) Addr() net.Addr {
 	return nil
 }

@@ -211,49 +211,9 @@ func apiHandler(w http.ResponseWriter, r *http.Request) {
 		sendJSON(w, r, stats.GetGroups())
 	case ".groups":
 		apiGroupHandler(w, r, rest)
-	case ".assignment":
-		apiAssignmentHandler(w, r, rest)
 	default:
 		http.NotFound(w, r)
 	}
-}
-
-func apiAssignmentHandler(w http.ResponseWriter, r *http.Request, pth string) {
-	if r.Method != "PUT" {
-		http.NotFound(w, r)
-		return
-	}
-
-	// TODO: support subgroups
-	pth = strings.Trim(pth, "/")
-	pths := strings.Split(pth, "/")
-	if len(pths) != 3 {
-		http.Error(w, "The path doesn't look right...", http.StatusBadRequest)
-		return
-	}
-	groupName, buddyId, remoteId := pths[0], pths[1], pths[2]
-
-
-	grp := group.Get(groupName)
-	if grp == nil {
-		http.Error(w, "Group not found", http.StatusNotFound)
-		return
-	}
-
-	bud := grp.GetClient(buddyId)
-	if bud == nil {
-		http.Error(w, "Buddy not found", http.StatusNotFound)
-		return
-	}
-
-	rem := grp.GetClient(remoteId)
-	if rem == nil {
-		http.Error(w, "Remote not found", http.StatusNotFound)
-		return
-	}
-
-	bud.AssignTo(remoteId)
-	rem.AssignTo(buddyId)
 }
 
 func apiGroupHandler(w http.ResponseWriter, r *http.Request, pth string) {

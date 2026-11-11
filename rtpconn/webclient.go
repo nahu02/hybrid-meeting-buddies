@@ -1601,36 +1601,6 @@ func (c *webClient) Kick(id string, user *string, message string) error {
 	return nil
 }
 
-func (c *webClient) AssignTo(buddyId string) error {
-	bud := c.Group().GetClient(buddyId)
-	if bud == nil {
-		return errors.New("Supposed buddy couldn't be found in the same group")
-	}
-
-	// TODO: maybe these reads could use some locks
-	cRole, _ := c.Data()["role"].(string)
-	budRole, _ := bud.Data()["role"].(string)
-
-	cRoleIncorrect := cRole != "buddyDevice" && cRole != "remote"
-	budRoleIncorrect := budRole != "buddyDevice" && budRole != "remote"
-	sameRoles :=  budRole == cRole
-
-	if cRoleIncorrect || budRoleIncorrect || sameRoles {
-		return fmt.Errorf("Can only assign a buddyDevice and a remote. They had the following roles: %q and %q", cRole, budRole)
-	} 
-
-	c.action(setDataAction{data: map[string]interface{}{"assignedTo": buddyId}})
-
-
-	// I think the below could lead to loop de loops
-	// budAssignedTo, _ := bud.Data()["assignedTo"].(string)
-	// if budAssignedTo != c.id {
-	// 	bud.AssignTo(c.id)
-	// }
-
-	return nil
-}
-
 func (c *webClient) Joined(group, kind string) error {
 	c.action(joinedAction{group, kind})
 	return nil
