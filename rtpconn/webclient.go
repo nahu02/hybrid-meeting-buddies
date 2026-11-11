@@ -61,17 +61,20 @@ func isWSNormalError(err error) bool {
 }
 
 type webClient struct {
-	group       *group.Group
-	addr        net.Addr
-	id          string
-	username    string
-	permissions []string
-	data        map[string]interface{}
-	requested   map[string][]string
-	done        chan struct{}
-	writeCh     chan interface{}
-	writerDone  chan struct{}
-	actions     *unbounded.Channel[any]
+	group         *group.Group
+	addr          net.Addr
+	id            string
+	username      string
+	permissions   []string
+	data          map[string]interface{}
+	resumeKey     string
+	resumeToken   string
+	explicitLeave bool
+	requested     map[string][]string
+	done          chan struct{}
+	writeCh       chan interface{}
+	writerDone    chan struct{}
+	actions       *unbounded.Channel[any]
 
 	mu   sync.Mutex
 	down map[string]*rtpDownConnection
@@ -126,6 +129,7 @@ type clientMessage struct {
 	Username         *string                  `json:"username,omitempty"`
 	Password         string                   `json:"password,omitempty"`
 	Token            string                   `json:"token,omitempty"`
+	ResumeToken      string                   `json:"resumeToken,omitempty"`
 	Privileged       bool                     `json:"privileged,omitempty"`
 	Permissions      []string                 `json:"permissions,omitempty"`
 	Status           *group.Status            `json:"status,omitempty"`
@@ -151,6 +155,7 @@ func (c *webClient) setData(data map[string]interface{}) {
 	if c.group == nil {
 		return
 	}
+	g := c.Group()
 	if c.data == nil {
 		c.data = make(map[string]interface{})
 	}
@@ -161,11 +166,20 @@ func (c *webClient) setData(data map[string]interface{}) {
 			c.data[k] = v
 		}
 	}
+	if value, changed := data["assignedTo"]; changed {
+		if value == nil {
+			clearResumePair(c)
+		} else if id, ok := value.(string); ok {
+			if other, ok := g.GetClient(id).(*webClient); ok {
+				updateResumePair(c, other)
+			}
+		}
+	}
+	saveResumeSession(c)
 	id := c.Id()
 	user := c.Username()
 	perms := c.Permissions()
 	data = c.Data()
-	g := c.Group()
 
 	go func(clients []group.Client) {
 		for _, cc := range clients {
@@ -1089,6 +1103,24 @@ func pushDownConn(c *webClient, id string, up conn.Up, tracks []conn.UpTrack, re
 				req = c.requested[""]
 			}
 		}
+		// An assigned buddy device must receive the remote participant's
+		// camera even when its general receive preference is audio-only
+		// or nothing. The role view makes this the buddy device's main
+		// screen, so omitting video leaves a misleading black tile.
+		if up.Label() == "camera" {
+			upUserId, _ := up.User()
+			upClient := c.group.GetClient(upUserId)
+			upRole := ""
+			if upClient != nil {
+				upRole, _ = upClient.Data()["role"].(string)
+			}
+			downRole, _ := c.Data()["role"].(string)
+			downAssignedTo, _ := c.Data()["assignedTo"].(string)
+			if downRole == "buddyDevice" && downAssignedTo == upUserId &&
+				upRole == "remote" && !slices.Contains(req, "video") {
+				req = append(req, "video")
+			}
+		}
 		requested, limitSid = requestedTracks(c, req, tracks)
 
 		// Filter the tracks we show based on the status of the requester client
@@ -1194,9 +1226,11 @@ func filterTracksByRoles(up conn.Up, c *webClient, requested []conn.UpTrack) ([]
 			requested = []conn.UpTrack{}
 		}
 
-		// remote with buddy
-		if upRole == "remote" && upAssignedTo != "" {
-			requested = filterTrackType(requested, upClientLabel, audio|screenshare)
+		if upRole == "remote" {
+			// A remote with a buddy may route its audio locally.
+			if upAssignedTo == "" {
+				return requested, nil
+			}
 
 			// disregard audio feeds if the buddy's audioRoute == local
 			buddyOfUpClient := c.group.GetClient(upAssignedTo)
@@ -1208,7 +1242,9 @@ func filterTracksByRoles(up conn.Up, c *webClient, requested []conn.UpTrack) ([]
 			buddyOfUpClientAudioRoute, _ := buddyOfUpClient.Data()["audioRoute"].(string)
 
 			if buddyOfUpClientAudioRoute == "local" {
-				requested = filterTrackType(requested, upClientLabel, screenshare)
+				// Keep the remote's camera visible to the leader while
+				// suppressing audio that is routed through the buddy.
+				requested = filterTrackType(requested, upClientLabel, camera|screenshare)
 			}
 		}
 	}
@@ -1236,14 +1272,15 @@ func filterTracksByRoles(up conn.Up, c *webClient, requested []conn.UpTrack) ([]
 
 		myBuddyButLeaderAudio := downAssignedTo == upUserId && upAudioRoute != "local"
 		if myBuddyButLeaderAudio {
-			requested = filterTrackType(requested, upClientLabel, camera)
+			// The remote still needs the paired buddy device's camera
+			// (the room view); only its audio is routed through the
+			// leader in this mode.
+			requested = filterTrackType(requested, upClientLabel, camera|screenshare)
 		}
 
-		// up is leader and client has buddy
+		// Keep the leader's camera visible to remotes after assignment.
+		// Only change its audio according to the paired buddy's route.
 		if upRole == "leader" && downAssignedTo != "" {
-			requested = filterTrackType(requested, upClientLabel, audio|screenshare)
-
-			// client's buddy set audioRoute to local
 			buddyClient := c.group.GetClient(downAssignedTo)
 			if buddyClient == nil {
 				return nil, fmt.Errorf("client %q has assignedTo=%q, but no such client in group %q",
@@ -1253,7 +1290,7 @@ func filterTracksByRoles(up conn.Up, c *webClient, requested []conn.UpTrack) ([]
 			buddyClientAudioRoute, _ := buddyClient.Data()["audioRoute"].(string)
 
 			if buddyClientAudioRoute == "local" {
-				requested = filterTrackType(requested, upClientLabel, screenshare)
+				requested = filterTrackType(requested, upClientLabel, camera|screenshare)
 			}
 		}
 	}
@@ -1362,6 +1399,7 @@ func handleAction(c *webClient, a any) error {
 			Status:           status,
 			Data:             data,
 			RTCConfiguration: ice.ICEConfiguration(),
+			ResumeToken:      c.resumeToken,
 		})
 		if err != nil {
 			return err
@@ -1411,6 +1449,7 @@ func handleAction(c *webClient, a any) error {
 		default:
 			return group.UserError("unknown permission")
 		}
+		saveResumeSession(c)
 		c.action(permissionsChangedAction{})
 	case permissionsChangedAction:
 		g := c.Group()
@@ -1455,6 +1494,7 @@ func handleAction(c *webClient, a any) error {
 			}
 		}(clients)
 	case kickAction:
+		c.explicitLeave = true
 		return group.KickError{
 			a.id, a.username, a.message,
 		}
@@ -1502,10 +1542,11 @@ func leaveGroup(c *webClient) {
 		}
 	}
 
-	// if a client that is assignedTo someone leaves, their buddy needs unassigning
 	assignedTo, _ := c.Data()["assignedTo"].(string)
-
-	if assignedTo != "" {
+	if c.explicitLeave {
+		removeResumeSession(c)
+	}
+	if assignedTo != "" && c.explicitLeave {
 		buddy := c.group.GetClient(assignedTo)
 		if buddy == nil {
 			log.Printf("As client %q was leaving, its assigned buddy %q couldn't be found", c.Id(), assignedTo)
@@ -1514,6 +1555,12 @@ func leaveGroup(c *webClient) {
 				wc.action(setDataAction{map[string]interface{}{"assignedTo": nil}})
 			}
 		}
+	}
+	if !c.explicitLeave {
+		// A socket closing during refresh or a short network interruption
+		// does not mean the participant has left the meeting. Keep their
+		// pairing and resume identity so they can rejoin without losing it.
+		saveResumeSession(c)
 	}
 
 	group.DelClient(c)
@@ -1524,6 +1571,8 @@ func leaveGroup(c *webClient) {
 	c.data = nil
 	c.requested = make(map[string][]string)
 	c.group = nil
+	c.resumeToken = ""
+	c.explicitLeave = false
 }
 
 func closeDownConn(c *webClient, id string, message string) error {
@@ -1617,6 +1666,7 @@ func handleClientMessage(c *webClient, m clientMessage) error {
 			if c.group == nil || c.group.Name() != m.Group {
 				return group.UserError("you are not joined")
 			}
+			c.explicitLeave = true
 			leaveGroup(c)
 			return nil
 		}
@@ -1630,12 +1680,52 @@ func handleClientMessage(c *webClient, m clientMessage) error {
 				"cannot join multiple groups",
 			)
 		}
-		c.data = m.Data
+		var resume *resumeSession
+		resumeTicket := ""
+		trusted := false
+		trustedUsername := ""
+		trustedPermissions := []string(nil)
+		if m.Data != nil {
+			role, _ := m.Data["role"].(string)
+			if role == "assignmentController" {
+				participantId, _ := m.Data["participantId"].(string)
+				participantRole, _ := m.Data["participantRole"].(string)
+				ticket, _ := m.Data["assignmentTicket"].(string)
+				trustedUsername, _ = consumeAssignmentHandoff(
+					ticket, m.Group, participantId, participantRole,
+				)
+				trusted = trustedUsername != ""
+			} else {
+				resumeTicket, _ = m.Data["resumeTicket"].(string)
+				resume, _ = takeResumeSession(resumeTicket, m.Group)
+			}
+		}
+		if resume != nil {
+			c.data = resume.data
+			if c.data == nil {
+				c.data = make(map[string]interface{})
+			}
+			delete(c.data, "resumeTicket")
+			if resume.partnerId != "" {
+				c.data["assignedTo"] = resume.partnerId
+			}
+			trusted = true
+			trustedUsername = resume.username
+			trustedPermissions = resume.permissions
+		} else {
+			c.data = m.Data
+			if c.data != nil {
+				delete(c.data, "resumeTicket")
+			}
+		}
 		g, err := group.AddClient(m.Group, c,
 			group.ClientCredentials{
-				Username: m.Username,
-				Password: m.Password,
-				Token:    m.Token,
+				Username:           m.Username,
+				Password:           m.Password,
+				Token:              m.Token,
+				Trusted:            trusted,
+				TrustedUsername:    trustedUsername,
+				TrustedPermissions: trustedPermissions,
 			},
 		)
 		if err != nil {
@@ -1682,6 +1772,13 @@ func handleClientMessage(c *webClient, m clientMessage) error {
 			})
 		}
 		c.group = g
+		var previous *resumeSession
+		if resume != nil {
+			previous = resume
+			c.resumeKey = resume.key
+		}
+		initializeResumeSession(c, previous)
+		restoreResumePair(g, c, previous)
 	case "request":
 		requested, err := parseRequested(m.Request)
 		if err != nil {
@@ -1892,6 +1989,36 @@ func handleClientMessage(c *webClient, m clientMessage) error {
 				return c.error(group.UserError("not authorised"))
 			}
 			startAssignments(g)
+		case "assignBuddies":
+			// Only the assignment controller (the page the
+			// participants open after "Start assignments", which
+			// joins with role "assignmentController") or an
+			// operator may apply assignments.
+			role, _ := c.Data()["role"].(string)
+			if role != "assignmentController" &&
+				!slices.Contains(c.permissions, "op") {
+				return c.error(group.UserError("not authorised"))
+			}
+			pairs, err := parseBuddyPairs(m.Value)
+			if err != nil {
+				return c.error(err)
+			}
+			err = validateBuddyPairs(pairs, func(id string) (bool, string) {
+				cc := g.GetClient(id)
+				if cc == nil {
+					return false, ""
+				}
+				wc, ok := cc.(*webClient)
+				if !ok {
+					return false, ""
+				}
+				r, _ := wc.Data()["role"].(string)
+				return true, r
+			})
+			if err != nil {
+				return c.error(err)
+			}
+			assignBuddies(g, pairs)
 		case "lock", "unlock":
 			if !slices.Contains(c.permissions, "op") {
 				return c.error(group.UserError("not authorised"))

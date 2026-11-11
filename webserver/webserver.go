@@ -42,6 +42,7 @@ func Serve(address string, dataDir string) error {
 	}
 	http.Handle("/", &fileHandler{staticRoot})
 	http.HandleFunc("/group/", groupHandler)
+	http.HandleFunc("/assignment/", assignmentHandler)
 	http.HandleFunc("/recordings",
 		func(w http.ResponseWriter, r *http.Request) {
 			http.Redirect(w, r,
@@ -382,6 +383,66 @@ func groupHandler(w http.ResponseWriter, r *http.Request) {
 	status := g.Status(false, nil)
 	cspHeader(w, status.AuthServer)
 	serveFile(w, r, staticRoot, "galene.html")
+}
+
+// assignmentHandler serves the assignment controller app.  The entry
+// page is the same for every participant; it reads the group name and
+// the participant id from its own URL (/assignment/<group>/<id>?role=<role>).
+//
+// The app is the React application in buddy-assignment-app/, built
+// (`npm run build`) into static/assignment/ with base /assignment/: an
+// index.html plus hashed files under assets/ and verbatim copies of its
+// public/ directory (models/, dictionaries/, ...).  If the build is
+// absent (a fresh checkout that hasn't run the build), we fall back to
+// the static placeholder page assignment.html.
+func assignmentHandler(w http.ResponseWriter, r *http.Request) {
+	if redirect(w, r) {
+		return
+	}
+
+	// static files of the built app; the prefixes are fixed by the
+	// build, anything else is a group/id entry URL.
+	rest := strings.TrimPrefix(r.URL.Path, "/assignment/")
+	if isAssignmentAssetPath(rest) {
+		cspHeader(w, "")
+		serveFile(w, r, staticRoot,
+			path.Join("assignment", path.Clean("/"+rest)))
+		return
+	}
+
+	name := parseGroupName("/assignment/", r.URL.Path)
+	if name == "" {
+		notFound(w)
+		return
+	}
+
+	cspHeader(w, "")
+
+	// prefer the built app over the placeholder
+	_, err := staticRoot.Open("assignment/index.html")
+	if err == nil {
+		serveFile(w, r, staticRoot, "assignment/index.html")
+		return
+	}
+	serveFile(w, r, staticRoot, "assignment.html")
+}
+
+// isAssignmentAssetPath says whether p (the path after /assignment/)
+// names a file of the built app rather than a group/id entry URL.
+func isAssignmentAssetPath(p string) bool {
+	if p == "" {
+		return false
+	}
+	for _, d := range []string{"assets/", "models/", "dictionaries/"} {
+		if strings.HasPrefix(p, d) {
+			return true
+		}
+	}
+	switch p {
+	case "favicon.png", "favicon.svg", "icons.svg":
+		return true
+	}
+	return false
 }
 
 func baseURL(r *http.Request) (*url.URL, error) {

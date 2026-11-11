@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -236,5 +237,113 @@ func TestObfuscate(t *testing.T) {
 	_, err = obfuscate("toto")
 	if err == nil {
 		t.Errorf("obfuscate: no errror")
+	}
+}
+
+func TestAssignmentHandler(t *testing.T) {
+	root, err := os.OpenRoot("../static")
+	if err != nil {
+		t.Fatalf("OpenRoot: %v", err)
+	}
+	saved := staticRoot
+	staticRoot = root
+	defer func() { staticRoot = saved }()
+
+	for _, p := range []string{
+		"/assignment/test/abc?role=remote",
+		"/assignment/test/",
+	} {
+		w := httptest.NewRecorder()
+		r := httptest.NewRequest("GET", p, nil)
+		assignmentHandler(w, r)
+		if w.Code != http.StatusOK {
+			t.Errorf("GET %v: got %v, expected %v",
+				p, w.Code, http.StatusOK)
+		}
+	}
+
+	for _, p := range []string{
+		"/assignment/",
+		"/assignment/../foo",
+	} {
+		w := httptest.NewRecorder()
+		r := httptest.NewRequest("GET", p, nil)
+		assignmentHandler(w, r)
+		if w.Code != http.StatusNotFound {
+			t.Errorf("GET %v: got %v, expected %v",
+				p, w.Code, http.StatusNotFound)
+		}
+	}
+
+	// assets of the built app: hashed names, so this file never
+	// exists even after a real build
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("GET", "/assignment/assets/nonexistent.js", nil)
+	assignmentHandler(w, r)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("GET missing asset: got %v, expected %v",
+			w.Code, http.StatusNotFound)
+	}
+
+	// traversal through an asset prefix must not escape static/assignment
+	for _, p := range []string{
+		"/assignment/assets/../../protocol.js",
+		"/assignment/assets/../../../static/protocol.js",
+	} {
+		w := httptest.NewRecorder()
+		r := httptest.NewRequest("GET", p, nil)
+		assignmentHandler(w, r)
+		if w.Code != http.StatusNotFound {
+			t.Errorf("GET %v: got %v, expected %v",
+				p, w.Code, http.StatusNotFound)
+		}
+	}
+
+	// serve a built asset if it is present
+	dir := filepath.Join("..", "static", "assignment", "assets")
+	err = os.MkdirAll(dir, 0755)
+	if err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	asset := filepath.Join(dir, "test-asset.js")
+	err = os.WriteFile(asset, []byte("// test asset\n"), 0644)
+	if err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	defer func() {
+		os.Remove(asset)
+		os.Remove(dir)
+		os.Remove(filepath.Dir(dir))
+	}()
+	w = httptest.NewRecorder()
+	r = httptest.NewRequest("GET", "/assignment/assets/test-asset.js", nil)
+	assignmentHandler(w, r)
+	if w.Code != http.StatusOK || w.Body.String() != "// test asset\n" {
+		t.Errorf("GET asset: got %v %q, expected 200 %q",
+			w.Code, w.Body.String(), "// test asset\n")
+	}
+
+	// the built index.html (the app's entry point) takes precedence
+	// over the placeholder.  A real build is never present in a clean
+	// checkout, so this branch is only testable when it is absent.
+	index := filepath.Join("..", "static", "assignment", "index.html")
+	if _, err := os.Stat(index); err != nil {
+		err = os.WriteFile(index, []byte("<!doctype html>built app"), 0644)
+		if err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+		defer os.Remove(index)
+		defer os.Remove(filepath.Dir(index))
+
+		w := httptest.NewRecorder()
+		r := httptest.NewRequest("GET", "/assignment/test/abc?role=remote", nil)
+		assignmentHandler(w, r)
+		if w.Code != http.StatusOK ||
+			w.Body.String() != "<!doctype html>built app" {
+			t.Errorf("GET entry page: got %v %q, expected the built index.html",
+				w.Code, w.Body.String())
+		}
+	} else {
+		t.Skip("a built assignment app is present; not testing the fallback")
 	}
 }

@@ -4,6 +4,16 @@
 /data
 /groups/**/*.json
 /static/**/*.d.ts
-/static/third-party/tasks-vision
-.env
+/static/third-party/tasks-visionnv.*
 
+/buddy-assignment-app/node_modules/
+/buddy-assignment-app/dist/
+/buddy-assignment-app/public/models/*
+!/buddy-assignment-app/public/models/.gitkeep
+
+# build output of the assignment app (buddy-assignment-app/vite.config.js)
+/static/assignment/
+
+**/AGENTS.md
+!/AGENTS.md
+AGENTS.md

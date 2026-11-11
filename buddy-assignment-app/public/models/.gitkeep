@@ -1,0 +1,3 @@
+# This folder holds local GloVe model files (e.g. glove.6B.50d.txt).
+# Model files are ignored by git to keep repository lightweight.
+

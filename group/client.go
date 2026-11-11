@@ -131,6 +131,11 @@ type ClientCredentials struct {
 	Username *string
 	Password string
 	Token    string
+	// Trusted credentials are set only by the server for validated,
+	// short-lived internal handoffs and meeting resume tickets.
+	Trusted            bool
+	TrustedUsername    string
+	TrustedPermissions []string
 }
 
 type Client interface {

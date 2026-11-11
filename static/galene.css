@@ -950,6 +950,91 @@ h1 {
     display: none;
 }
 
+body.role-buddyDevice.unassigned #video-container {
+    display: none !important;
+}
+
+body.role-buddyDevice.unassigned #peers {
+    display: none !important;
+}
+
+body.role-buddyDevice.assigned #video-container {
+    position: fixed;
+    top: 56px;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    width: auto;
+    height: auto;
+    margin: 0;
+    z-index: var(--z-peers);
+    overflow: hidden;
+}
+
+body.role-buddyDevice.assigned #expand-video,
+body.role-buddyDevice.assigned #peers {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    min-width: 0;
+    min-height: 0;
+    padding: 0;
+    display: block;
+    overflow: hidden;
+}
+
+.buddy-waiting {
+    display: none;
+}
+
+.buddy-waiting:not(.invisible) {
+    display: grid;
+    place-items: center;
+    min-height: 50vh;
+    padding: 2rem;
+    color: #555;
+    font-size: 1.25rem;
+    text-align: center;
+}
+
+body.role-buddyDevice.assigned #peers .peer-role-hidden {
+    display: none !important;
+}
+
+body.role-leader.assignment-active #peers .peer-role-hidden {
+    display: none !important;
+}
+
+body.role-remote.assigned #peers .peer-role-hidden {
+    display: none !important;
+}
+
+body.role-buddyDevice.assigned #peers .peer-fullscreen {
+    position: absolute;
+    inset: 0;
+    display: grid !important;
+    place-items: center;
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    border: 0;
+    background: #000;
+    visibility: visible !important;
+}
+
+body.role-buddyDevice.assigned #peers .peer-fullscreen .media {
+    display: block !important;
+    width: 100%;
+    height: 100%;
+    max-width: 100%;
+    max-height: none !important;
+    padding: 0;
+    object-fit: contain;
+    object-position: center;
+    visibility: visible !important;
+}
+
 .media {
     width: 100%;
     max-height: calc(var(--vh, 1vh) * 100 - 76px);
@@ -1462,4 +1547,37 @@ header .collapse:hover {
 }
 .toastify.info .toast-close {
     color: #000;
+}
+/* Assignment link notice. Keep positioning in CSS: the page's CSP blocks
+   Toastify's inline positioning styles. */
+.assignment-toast {
+    position: fixed;
+    z-index: 2147483647;
+    top: 15px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    max-width: calc(100vw - 2rem);
+    padding: 0.75rem 1rem;
+    border-radius: 0.25rem;
+    background: #2368c4;
+    color: #fff;
+    box-shadow: 0 3px 12px #0005;
+}
+
+.assignment-toast a {
+    color: inherit;
+    font-weight: 600;
+    text-decoration: underline;
+}
+
+.assignment-toast-close {
+    border: 0;
+    padding: 0 0.25rem;
+    background: transparent;
+    color: inherit;
+    font-size: 1.25rem;
+    cursor: pointer;
 }

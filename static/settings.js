@@ -37,6 +37,8 @@
  * @property {boolean} [preprocessing]
  * @property {boolean} [hqaudio]
  * @property {boolean} [forceRelay]
+ * @property {string} [role]
+ * @property {string} [facingMode]
  */
 
 /**
