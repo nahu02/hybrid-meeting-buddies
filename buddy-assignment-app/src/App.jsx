@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { loadGloveFromUrl } from "./algorithms/glove";
 import { loadSpellChecker } from "./algorithms/spellchecker";
 import { compareParticipants } from "./algorithms/matching";
-import { QUESTIONS_COUNT, PARTICIPANTS_COUNT, GLOVE_MODEL_PATH } from "./config";
+import { QUESTIONS_COUNT } from "./config";
 import "./App.css";
 
 function createQuestions(count) {
@@ -27,11 +27,10 @@ const sampleQuestions =
 function App() {
   // const [embeddings, setEmbeddings] = useState(null);
   // const [loadingModel, setLoadingModel] = useState(true);
-
-  const [spell, setSpell] = useState(null);
+  // const [matchResult, setMatchResult] = useState([]);
+  // const [spell, setSpell] = useState(null);
 
   const [questions, setQuestions] = useState(() => createQuestions(QUESTIONS_COUNT));
-  // const [matchResult, setMatchResult] = useState([]);
   const [submitted, setSubmitted] = useState(false);
 
   // Initialize GloVe model and spellchecker on mount
@@ -129,41 +128,6 @@ function App() {
           <p>Please wait while we find your buddy.</p>
         </section>
       )}
-
-      {/* Results Section */}
-      {/* {matchResult && matchResult.assignedPairs && (
-        <section className="results-section"> */}
-      {/* Suggested Buddy Assignments */}
-      {/* <div className="assigned-pairs-card">
-            <h3>Suggested Buddy Assignments</h3>
-            <p className="pairs-desc">
-              Optimal buddy pairings based on answer similarity:
-            </p>
-            <div className="pairs-list">
-
-              {matchResult.assignedPairs.map((pair) => (
-                <div key={pair.id} className="pair-pill">
-
-                  <span className="pair-names">
-                    <strong>{pair.participant1}</strong> &harr; <strong>{pair.participant2}</strong>
-                  </span>
-
-                  <span className="pair-score">
-                    {pair.percentage}% match
-                  </span>
-
-                </div>
-              ))}
-
-              {matchResult.unmatched && matchResult.unmatched.length > 0 && (
-                <div className="unmatched-note">
-                  Unpaired participant: {matchResult.unmatched.join(", ")}
-                </div>
-              )}
-            </div>
-          </div>
-        </section>
-      )} */}
     </div>
   );
 }
