@@ -114,6 +114,10 @@ func (c *WhipClient) Kick(id string, user *string, message string) error {
 	return c.Close()
 }
 
+func (c *WhipClient) AssignTo(_ string) error {
+	return errors.New("AssignTo must only be called on webclient clients")
+}
+
 func (c *WhipClient) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()

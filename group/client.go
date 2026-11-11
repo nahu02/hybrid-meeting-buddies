@@ -146,4 +146,5 @@ type Client interface {
 	Joined(group, kind string) error
 	PushClient(group, kind, id, username string, perms []string, data map[string]interface{}) error
 	Kick(id string, user *string, message string) error
+	AssignTo(buddyId string) error
 }
