@@ -614,14 +614,19 @@ func AddClient(group string, c Client, creds ClientCredentials) (*Group, error) 
 	clients := g.getClientsUnlocked(nil)
 
 	if !slices.Contains(c.Permissions(), "system") {
-		username, perms, err := g.description.GetPermission(
-			g.name, creds,
-		)
-		if err != nil {
-			return nil, err
+		perms := []string(nil)
+		if creds.Trusted {
+			c.Init(creds.TrustedUsername, creds.TrustedPermissions)
+		} else {
+			username, resolved, err := g.description.GetPermission(
+				g.name, creds,
+			)
+			if err != nil {
+				return nil, err
+			}
+			perms = resolved
+			c.Init(username, perms)
 		}
-
-		c.Init(username, perms)
 
 		if !slices.Contains(perms, "op") {
 			if g.locked != nil {
@@ -676,6 +681,19 @@ func AddClient(group string, c Client, creds ClientCredentials) (*Group, error) 
 	id := c.Id()
 	if id == "" {
 		return nil, errors.New("client has empty id")
+	}
+	// A meeting has a single leader.  This check is protected by g.mu,
+	// which is held for the whole AddClient operation, so simultaneous
+	// leader joins cannot both pass it.  Once the leader leaves, the next
+	// leader is admitted normally.
+	role, _ := c.Data()["role"].(string)
+	if role == "leader" {
+		for _, cc := range clients {
+			otherRole, _ := cc.Data()["role"].(string)
+			if otherRole == "leader" {
+				return nil, UserError("a leader is already in this meeting")
+			}
+		}
 	}
 	if g.clients[id] != nil {
 		return nil, ProtocolError("duplicate client id")

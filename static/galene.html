@@ -52,6 +52,12 @@
                   </button>
                 </li>
                 <li>
+                  <button id="audioroutebutton" class="invisible btn btn-default" type="button">Audio: TV</button>
+                </li>
+                <li>
+                  <button id="flipcamerabutton" class="invisible btn btn-default" type="button">Flip camera</button>
+                </li>
+                <li>
                   <div id="mutebutton" class="nav-link nav-button">
                     <span><i class="fas fa-microphone-slash" aria-hidden="true"></i></span>
                     <label>Mute</label>
@@ -104,6 +110,9 @@
                   <div id="peers"></div>
                 </div>
               </div>
+              <div id="buddy-waiting" class="buddy-waiting invisible" role="status">
+                Waiting for assignment…
+              </div>
               <div id="captions-container" class="invisible">
                 <div id="captions"></div>
               </div>
@@ -114,6 +123,14 @@
                       <label for="username">Username</label>
                       <input id="username" type="text" name="username"
                              autocomplete="username" class="form-control"/>
+                    </div>
+                    <div id="roleform">
+                      <label for="roleselect">Role</label>
+                      <select id="roleselect" name="role" class="form-control" required>
+                        <option value="remote" selected>Remote participant</option>
+                        <option value="buddyDevice">Buddy device</option>
+                        <option value="leader">Leader (room TV)</option>
+                      </select>
                     </div>
                     <div id="passwordform">
                       <label for="password">Password</label>

@@ -11,4 +11,9 @@
 /buddy-assignment-app/public/models/*
 !/buddy-assignment-app/public/models/.gitkeep
 
+# build output of the assignment app (buddy-assignment-app/vite.config.js)
+/static/assignment/
+
 **/AGENTS.md
+!/AGENTS.md
+AGENTS.md

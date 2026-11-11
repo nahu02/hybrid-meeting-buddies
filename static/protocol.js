@@ -447,7 +447,8 @@ ServerConnection.prototype.connect = function(url) {
                 sc.onjoined.call(sc, m.kind, m.group,
                                  m.permissions || [],
                                  m.status, m.data,
-                                 m.error || null, m.value || null);
+                                 m.error || null, m.value || null,
+                                 m.resumeToken || null);
             break;
         case 'user':
             switch(m.kind) {

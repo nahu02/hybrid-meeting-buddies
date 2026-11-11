@@ -7,7 +7,10 @@
     "dev": "vite",
     "build": "vite build",
     "lint": "oxlint",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test:matching": "node test/matching.test.mjs",
+    "test:e2e": "node test/e2e.mjs",
+    "test": "npm run test:matching && npm run test:e2e"
   },
   "dependencies": {
     "dictionary-en": "^4.0.0",

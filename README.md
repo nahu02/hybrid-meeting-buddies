@@ -16,11 +16,25 @@ so reloading the page or sharing the link keeps the role, e.g.
 
     https://server/group/meeting/?role=leader
 
+The role selector defaults to remote participant and remembers the last
+choice for that browser session. A valid `?role=` link overrides the saved
+choice. Meeting participants with presentation permission start their camera
+and microphone on join. Assigned buddy devices have an *Audio: TV/phone*
+toggle and a *Flip camera* control; while unassigned they see a waiting message.
+Only one leader can be in a meeting at a time. If a leader is already
+connected, another client selecting the leader role is refused and must join
+as a remote participant or buddy device. A new leader can join after the
+current leader leaves.
+
 The role, together with any other query parameters except `token`, is
 sent to the server as the client's join `data`.  The role never changes
 after joining; the other data fields may change during the meeting (via
 the `setdata` user action, which triggers server-side re-filtering of
-all streams).
+all streams). A page refresh resumes the authenticated meeting session and
+keeps any buddy assignment. Use `/leave` to leave intentionally and clear
+the saved session and assignment. Resume tickets expire after 24 hours of
+inactivity; the browser keeps the ticket in tab-scoped session storage, and
+the server keeps the matching resume state in memory.
 
 ### Client data fields
 
@@ -41,7 +55,16 @@ all streams).
    interface (a new tab; the browser requires a tap on the toast to open
    it, since popups may not be opened automatically).
 3. **Assignment** — the assignment interface pairs remote participants
-   with buddy devices; the server sets both clients' `assignedTo`.
+   with buddy devices. Each participant answers the questions in the
+   assignment page; the page computes a maximum-weight one-to-one match
+   between submitted remote and buddy-device answers. The server validates
+   the pairs and sets both clients' `assignedTo`. The extra controller
+   connections used by the assignment pages are hidden from the meeting
+   participant list, and the result page waits until both sides report the
+   match. Each page receives a short-lived, one-use handoff so participants
+   are not asked to enter their meeting credentials again. Results show both
+   participants' answers side by side only to the two participants in that
+   pair; other participants do not see their answers or pair details.
 4. **After assignment** — participants return to the original tab, where
    the new view has already taken place: the server re-filters the streams
    as soon as `assignedTo` changes, and the client UI switches to the
@@ -59,12 +82,18 @@ all streams).
 
 | Participant                            | Video views                                                                                                | Audio                                                                                                                                                   | Buttons                                                                                       |
 | -------------------------------------- | ---------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
-| Leader (not part of the assignment)    | Only their own camera feed, the conferencing camera that captures the whole room; remote participants' video tiles are no longer shown (buddy devices never were) | Remote participants' voices keep playing on the TV, unless a buddy device switched its audio route to `local` (then that remote is silent on the TV)     | Existing buttons + *Start assignments*                                                        |
-| Buddy device with an assigned remote   | Full-screen video feed of the assigned remote participant, with a small self-preview                        | `leader` (default): no meeting audio on the phone.  `local`: the phone plays the assigned remote's voice and streams the room audio to them               | *Audio route* toggle (leader ↔ local); *camera flip* (front/back), tied to the self-preview   |
-| Remote participant assigned to a buddy | Other remote participants, their own preview, and the feed from their buddy device (the physical room); the leader's video is no longer shown | `leader` (default): hears the room via the leader's mic, own voice played by the TV.  `local`: hears the room via the buddy device, own voice played by it | Existing buttons only                                                                          |
+| Leader (not part of the assignment)    | Their own camera feed and the camera feeds of all remote participants; buddy devices are never shown | Remote participants' voices keep playing on the TV, unless a buddy device switched its audio route to `local` (then that remote is silent on the TV)     | Existing buttons + *Start assignments*                                                        |
+| Buddy device with an assigned remote   | The assigned remote participant's full-screen camera feed, preserving its aspect ratio; no other video tiles | `leader` (default): no meeting audio on the phone.  `local`: the phone plays the assigned remote's voice and streams the room audio to them               | *Audio route* toggle (leader ↔ local); *camera flip* (front/back)   |
+| Remote participant assigned to a buddy | The leader's camera, other remote participants, their own preview, and the feed from their buddy device (the physical room) | `leader` (default): hears the room via the leader's mic, own voice played by the TV.  `local`: hears the room via the buddy device, own voice played by it | Existing buttons only                                                                          |
 
 Remote participants without a buddy (not enough buddy devices, or before
 their assignment) keep the pre-assignment view.
+
+The assignment app source is in `buddy-assignment-app/`. Build it with
+`cd buddy-assignment-app && npm install && npm run build`; Galene serves the
+generated app at `/assignment/`. A fresh checkout without that build still
+serves the placeholder assignment page. The app's matching unit test and
+websocket smoke test run with `npm test` from `buddy-assignment-app/`.
 
 ## Quick start
 

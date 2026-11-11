@@ -64,12 +64,165 @@ let token = null;
  */
 let queryData = {};
 
+const validRoles = ['remote', 'buddyDevice', 'leader'];
+
+function ownUserData() {
+    if(!serverConnection || !serverConnection.id)
+        return {};
+    let user = serverConnection.users[serverConnection.id];
+    return user && user.data ? user.data : {};
+}
+
+function joinedRole() {
+    let role = ownUserData().role;
+    return validRoles.includes(role) ? role : null;
+}
+
+function updateRoleURL() {
+    let params = new URLSearchParams();
+    for(let key in queryData) {
+        if(queryData[key] !== undefined && queryData[key] !== null)
+            params.set(key, String(queryData[key]));
+    }
+    let query = params.toString();
+    history.replaceState(null, '', location.pathname +
+                         (query ? '?' + query : '') + location.hash);
+}
+
+function setRole(role, updateUrl) {
+    if(!validRoles.includes(role))
+        role = 'remote';
+    queryData.role = role;
+    updateSettings({role: role});
+    let select = document.getElementById('roleselect');
+    if(select instanceof HTMLSelectElement)
+        select.value = role;
+    if(updateUrl)
+        updateRoleURL();
+}
+
+function updateRoleClasses() {
+    let data = ownUserData();
+    let role = joinedRole();
+    let body = document.body;
+    let assignmentActive = Object.values(serverConnection.users || {}).some(
+        user => user.data && user.data.assignedTo,
+    );
+    if(assignmentActive)
+        document.getElementById('assignment-toast')?.remove();
+    for(let r of validRoles)
+        body.classList.remove('role-' + r);
+    body.classList.remove('assigned', 'unassigned', 'assignment-active');
+    if(role)
+        body.classList.add('role-' + role);
+    if(assignmentActive)
+        body.classList.add('assignment-active');
+    if(role === 'remote' || role === 'buddyDevice')
+        body.classList.add(data.assignedTo ? 'assigned' : 'unassigned');
+    return {role: role, data: data};
+}
+
+function updateRoleView() {
+    let {role, data} = updateRoleClasses();
+    let assigned = !!data.assignedTo;
+    let waiting = document.getElementById('buddy-waiting');
+    if(waiting)
+        waiting.classList.toggle('invisible',
+                                role !== 'buddyDevice' || assigned);
+
+    let peers = document.getElementById('peers');
+    for(let peer of Array.from(peers.children)) {
+        peer.classList.remove('peer-fullscreen', 'peer-pip',
+                             'peer-role-hidden');
+        let localId = peer.id.replace(/^peer-/, '');
+        let up = serverConnection.up[localId];
+        let down = serverConnection.down[localId];
+        if(role === 'buddyDevice') {
+            // The buddy device has a single video surface: its assigned
+            // remote. Never keep self previews, other peers, or hidden grid
+            // cells in this view.
+            if(!assigned || up || !down || down.source !== data.assignedTo) {
+                removePeerElement(peer);
+                continue;
+            }
+            // Generic role and media visibility rules can hide downstream
+            // peers (for example when displayAll is off). The assigned
+            // remote is the one exception: it must always be the visible
+            // full-screen peer in this view.
+            peer.classList.remove('peer-hidden', 'peer-role-hidden');
+            peer.classList.add('peer-fullscreen');
+        }
+    }
+
+    if(role === 'buddyDevice' && assigned) {
+        // A video stream may have arrived while the role was still
+        // unassigned. Render it now if its video track is live.
+        let target = Object.values(serverConnection.down).find(
+            (c) => c.source === data.assignedTo &&
+                c.stream?.getVideoTracks().some((t) => t.readyState === 'live')
+        );
+        if(target && !document.getElementById('peer-' + target.localId))
+            setMedia(target, false, null);
+        let peer = target &&
+            document.getElementById('peer-' + target.localId);
+        if(peer) {
+            peer.classList.remove('peer-hidden', 'peer-role-hidden');
+            peer.classList.add('peer-fullscreen');
+            let media = peer.querySelector('.media');
+            if(media)
+                media.classList.remove('invisible');
+        }
+    }
+    if(role === 'buddyDevice' && peers.childElementCount === 0)
+        hideVideo(true);
+
+    setButtonsVisibility();
+    resizePeers();
+}
+
+let autoPresentAttempted = false;
+let joinedSuccessfully = false;
+
+function autoPresentForRole() {
+    let role = joinedRole();
+    if((role !== 'leader' && role !== 'buddyDevice' && role !== 'remote') ||
+       autoPresentAttempted || !serverConnection ||
+       serverConnection.permissions.indexOf('present') < 0 ||
+       !('mediaDevices' in navigator) ||
+       !('getUserMedia' in navigator.mediaDevices) ||
+       findUpMedia('camera'))
+        return;
+    autoPresentAttempted = true;
+    addLocalMedia();
+}
+
 /**
  * The state of the login automaton.
  *
  * @type {"probing" | "need-username" | "success"}
  */
 let probingState = null;
+let resumeAttemptTicket = null;
+
+function resumeStorageKey() {
+    return `galene-resume:${group}`;
+}
+
+function getResumeTicket() {
+    try {
+        return sessionStorage.getItem(resumeStorageKey());
+    } catch(e) {
+        return null;
+    }
+}
+
+function clearResumeTicket() {
+    try {
+        sessionStorage.removeItem(resumeStorageKey());
+    } catch(e) {
+        // Session storage can be disabled; normal login remains available.
+    }
+}
 
 /**
  * getElementById, then assert that the result is an HTMLSelectElement.
@@ -324,7 +477,12 @@ function setChangePassword(username) {
 async function join() {
     let username = getInputElement('username').value.trim();
     let credentials;
-    if(token) {
+    let savedResumeTicket = token ? null : getResumeTicket();
+    resumeAttemptTicket = savedResumeTicket;
+    if(savedResumeTicket) {
+        username = null;
+        credentials = '';
+    } else if(token) {
         pwAuth = false;
         credentials = {
             type: 'token',
@@ -371,7 +529,10 @@ async function join() {
     }
 
     try {
-        await serverConnection.join(group, username, credentials, queryData);
+        let data = Object.assign({}, queryData);
+        if(savedResumeTicket)
+            data.resumeTicket = savedResumeTicket;
+        await serverConnection.join(group, username, credentials, data);
     } catch(e) {
         console.error(e);
         displayError(e);
@@ -478,6 +639,33 @@ getButtonElement('startassignmentsbutton').onclick = function(e) {
     serverConnection.groupAction('startAssignments');
 };
 
+getSelectElement('roleselect').onchange = function(e) {
+    e.preventDefault();
+    if(!(this instanceof HTMLSelectElement))
+        throw new Error('Unexpected type for this');
+    setRole(this.value, true);
+};
+
+getButtonElement('audioroutebutton').onclick = function(e) {
+    e.preventDefault();
+    let data = ownUserData();
+    let audioRoute = data.audioRoute === 'local' ? 'leader' : 'local';
+    serverConnection.userAction('setdata', serverConnection.id,
+                                {audioRoute: audioRoute});
+};
+
+getButtonElement('flipcamerabutton').onclick = function(e) {
+    e.preventDefault();
+    let settings = getSettings();
+    let facingMode = settings.facingMode === 'environment' ?
+        'user' : 'environment';
+    updateSettings({facingMode: facingMode});
+    if(findUpMedia('camera'))
+        replaceCameraStream();
+    else
+        addLocalMedia();
+};
+
 getButtonElement('unpresentbutton').onclick = function(e) {
     e.preventDefault();
     closeUpMedia('camera');
@@ -531,9 +719,17 @@ function setButtonsVisibility() {
 
     setVisibility('mutebutton', !connected || canPresent);
 
-    // only the leader (role taken from the page URL) can start assignments
+    let role = joinedRole();
+    let assigned = !!ownUserData().assignedTo;
     setVisibility('startassignmentsbutton',
-                  !!connected && queryData.role === 'leader');
+                  !!connected && role === 'leader');
+    setVisibility('audioroutebutton',
+                  !!connected && role === 'buddyDevice' && assigned);
+    setVisibility('flipcamerabutton',
+                  !!connected && role === 'buddyDevice' && assigned);
+    let audioRoute = ownUserData().audioRoute === 'local' ? 'local' : 'leader';
+    getButtonElement('audioroutebutton').textContent =
+        audioRoute === 'local' ? 'Audio: phone' : 'Audio: TV';
 
     // allow multiple shared documents
     setVisibility('sharebutton', canShare);
@@ -573,6 +769,7 @@ getSelectElement('videoselect').onchange = function(e) {
     if(!(this instanceof HTMLSelectElement))
         throw new Error('Unexpected type for this');
     updateSettings({video: this.value});
+    delSetting('facingMode');
     replaceCameraStream();
 };
 
@@ -1059,7 +1256,9 @@ function doSimulcast() {
     default:
         let count = 0;
         for(let n in serverConnection.users) {
-            if(!serverConnection.users[n].permissions["system"]) {
+            let user = serverConnection.users[n];
+            if(!user.permissions["system"] &&
+               user.data.role !== 'assignmentController') {
                 count++;
                 if(count > 2)
                     break;
@@ -1232,7 +1431,7 @@ async function replaceUpStream(c) {
     }
 
     await setMedia(cn,
-                   cn.label === 'camera' && getSettings().mirrorView,
+                   cn.label === 'camera' && shouldMirrorCamera(),
                    cn.label === 'video' && media);
 
     return cn;
@@ -1273,7 +1472,9 @@ async function addLocalMedia(localId) {
     /** @type{boolean|MediaTrackConstraints} */
     let audio = settings.audio ? {deviceId: settings.audio} : false;
     /** @type{boolean|MediaTrackConstraints} */
-    let video = settings.video ? {deviceId: settings.video} : false;
+    let video = settings.facingMode ?
+        {facingMode: {ideal: settings.facingMode}} :
+        (settings.video ? {deviceId: settings.video} : false);
 
     if(video) {
         let resolution = settings.resolution;
@@ -1337,13 +1538,19 @@ async function addLocalMedia(localId) {
 
     try {
         await setUpStream(c, stream);
-        await setMedia(c, settings.mirrorView);
+        await setMedia(c, shouldMirrorCamera());
     } catch(e) {
         console.error(e);
         displayError(e);
         c.close();
     }
     setButtonsVisibility();
+}
+
+function shouldMirrorCamera() {
+    if(joinedRole() === 'buddyDevice')
+        return getSettings().facingMode !== 'environment';
+    return !!getSettings().mirrorView;
 }
 
 let safariScreenshareDone = false;
@@ -1611,6 +1818,14 @@ function scheduleReconsiderDownRate() {
  *       controls will be created.
  */
 async function setMedia(c, mirror, video) {
+    if(joinedRole() === 'buddyDevice') {
+        let assignedTo = ownUserData().assignedTo;
+        let videoReady = c.stream &&
+            c.stream.getVideoTracks().some((t) => t.readyState === 'live');
+        if(!assignedTo || c.up || c.source !== assignedTo || !videoReady)
+            return;
+    }
+
     let div = document.getElementById('peer-' + c.localId);
     if(!div) {
         div = document.createElement('div');
@@ -1621,6 +1836,13 @@ async function setMedia(c, mirror, video) {
     }
 
     showHideMedia(c, div)
+    if(joinedRole() === 'buddyDevice' &&
+       c.source === ownUserData().assignedTo && !c.up) {
+        // A paired remote's camera is the buddy-device UI, independent of
+        // Galene's generic "display all peers" preference.
+        div.classList.remove('peer-hidden', 'peer-role-hidden');
+        div.classList.add('peer-fullscreen');
+    }
 
     let media = /** @type {HTMLVideoElement} */
         (document.getElementById('media-' + c.localId));
@@ -1667,6 +1889,7 @@ async function setMedia(c, mirror, video) {
     setMediaStatus(c);
 
     showVideo();
+    updateRoleView();
     resizePeers();
 }
 
@@ -1876,18 +2099,24 @@ function registerControlHandlers(localId, media, container) {
 function delMedia(localId) {
     let mediadiv = document.getElementById('peers');
     let peer = document.getElementById('peer-' + localId);
-    if(!peer)
-        throw new Error('Removing unknown media');
-
     let media = /** @type{HTMLVideoElement} */
         (document.getElementById('media-' + localId));
-
-    media.srcObject = null;
-    mediadiv.removeChild(peer);
+    if(media)
+        media.srcObject = null;
+    if(peer && peer.parentElement === mediadiv)
+        mediadiv.removeChild(peer);
 
     setButtonsVisibility();
+    updateRoleView();
     resizePeers();
     hideVideo();
+}
+
+function removePeerElement(peer) {
+    let media = peer.querySelector('video');
+    if(media)
+        media.srcObject = null;
+    peer.remove();
 }
 
 /**
@@ -1934,6 +2163,14 @@ function setLabel(c, fallback) {
     if(!label)
         return;
     let l = c.username;
+    let role = joinedRole();
+    let ownData = ownUserData();
+    if(c.up && (role === 'leader' || role === 'remote')) {
+        l = (serverConnection.username || l || 'You') + ' (you)';
+    } else if(!c.up && role === 'remote' && ownData.assignedTo &&
+              c.source === ownData.assignedTo) {
+        l = (c.username || 'Buddy device') + ' (your buddy)';
+    }
     if(l) {
         label.textContent = l;
         label.classList.remove('label-fallback');
@@ -1950,10 +2187,18 @@ function resizePeers() {
     // Window resize can call this method too early
     if (!serverConnection)
         return;
+    let peers = document.getElementById('peers');
+    if(joinedRole() === 'buddyDevice') {
+        peers.style['grid-template-columns'] = '1fr';
+        peers.style['grid-template-rows'] = '1fr';
+        let media = peers.querySelector('.peer-fullscreen .media');
+        if(media instanceof HTMLMediaElement)
+            media.style.removeProperty('max-height');
+        return;
+    }
     let count =
         Object.keys(serverConnection.up).length +
         Object.keys(serverConnection.down).length;
-    let peers = document.getElementById('peers');
     let columns = Math.ceil(Math.sqrt(count));
     if (!count)
         // No video, nothing to resize.
@@ -2155,6 +2400,8 @@ function userMenu(elt) {
  * @param {user} userinfo
  */
 function addUser(id, userinfo) {
+    if(userinfo.data.role === 'assignmentController')
+        return;
     let div = document.getElementById('users');
     let user = document.createElement('div');
     user.id = 'user-' + id;
@@ -2201,8 +2448,13 @@ function addUser(id, userinfo) {
   */
 function changeUser(id, userinfo) {
     let elt = document.getElementById('user-' + id);
+    if(userinfo.data.role === 'assignmentController') {
+        if(elt)
+            delUser(id);
+        return;
+    }
     if(!elt) {
-        console.warn('Unknown user ' + id);
+        addUser(id, userinfo);
         return;
     }
     setUserStatus(id, elt, userinfo);
@@ -2247,7 +2499,19 @@ function setUserStatus(id, elt, userinfo) {
 function delUser(id) {
     let div = document.getElementById('users');
     let user = document.getElementById('user-' + id);
+    if(!user)
+        return false;
     div.removeChild(user);
+    return true;
+}
+
+function meetingUserCount() {
+    let count = 0;
+    for(let id in serverConnection.users) {
+        if(serverConnection.users[id].data.role !== 'assignmentController')
+            count++;
+    }
+    return count;
 }
 
 /**
@@ -2257,13 +2521,15 @@ function delUser(id) {
 function gotUser(id, kind) {
     switch(kind) {
     case 'add':
-        addUser(id, serverConnection.users[id]);
-        if(Object.keys(serverConnection.users).length === 3)
+        let addedUser = serverConnection.users[id];
+        addUser(id, addedUser);
+        if(addedUser.data.role !== 'assignmentController' &&
+           meetingUserCount() === 3)
             reconsiderSendParameters();
         break;
     case 'delete':
-        delUser(id);
-        if(Object.keys(serverConnection.users).length < 3)
+        let wasVisible = delUser(id);
+        if(wasVisible && meetingUserCount() < 3)
             scheduleReconsiderParameters();
         break;
     case 'change':
@@ -2272,6 +2538,10 @@ function gotUser(id, kind) {
     default:
         console.warn('Unknown user kind', kind);
         break;
+    }
+    updateRoleView();
+    if(id === serverConnection.id && joinedSuccessfully) {
+        autoPresentForRole();
     }
 }
 
@@ -2347,12 +2617,21 @@ async function closeSafariStream() {
  * @param {string} error
  * @param {string} message
  */
-async function gotJoined(kind, group, perms, status, data, error, message) {
+async function gotJoined(kind, group, perms, status, data, error, message,
+                         resumeToken) {
     let present = presentRequested;
     presentRequested = null;
 
     switch(kind) {
     case 'fail':
+        autoPresentAttempted = false;
+        joinedSuccessfully = false;
+        if(resumeAttemptTicket) {
+            clearResumeTicket();
+            resumeAttemptTicket = null;
+            setVisibility('login-container', true);
+            getInputElement('username').focus();
+        }
         if(probingState === 'probing' && error === 'need-username') {
             probingState = 'need-username';
             setVisibility('passwordform', false);
@@ -2371,8 +2650,13 @@ async function gotJoined(kind, group, perms, status, data, error, message) {
         document.location.href = message;
         return;
     case 'leave':
+        autoPresentAttempted = false;
+        joinedSuccessfully = false;
+        clearResumeTicket();
+        resumeAttemptTicket = null;
         closeSafariStream();
         this.close();
+        setVisibility('login-container', true);
         setButtonsVisibility();
         setChangePassword(null);
         return;
@@ -2389,18 +2673,31 @@ async function gotJoined(kind, group, perms, status, data, error, message) {
         } else {
             token = null;
         }
+        if(resumeToken) {
+            try {
+                sessionStorage.setItem(resumeStorageKey(), resumeToken);
+            } catch(e) {
+                console.warn('Could not save meeting resume ticket:', e);
+            }
+        }
+        resumeAttemptTicket = null;
         // don't discard endPoint and friends
         for(let key in status)
             groupStatus[key] = status[key];
         setTitle((status && status.displayName) || capitalise(group));
         displayUsername();
         setButtonsVisibility();
+        updateRoleView();
+        joinedSuccessfully = false;
         setChangePassword(pwAuth && !!groupStatus.canChangePassword &&
                           serverConnection.username
         );
         openSafariStream();
-        if(kind === 'change')
+        if(kind === 'change') {
+            joinedSuccessfully = true;
+            autoPresentForRole();
             return;
+        }
         break;
     default:
         token = null;
@@ -2447,6 +2744,9 @@ async function gotJoined(kind, group, perms, status, data, error, message) {
             );
         }
     }
+    joinedSuccessfully = true;
+    if(!present)
+        autoPresentForRole();
 }
 
 /**
@@ -2654,20 +2954,38 @@ function gotUserMessage(id, dest, username, time, privileged, kind, error, messa
             console.error(`Got unprivileged message of kind ${kind}`);
             return;
         }
-        // Browsers block window.open() when it isn't triggered by a user
-        // click, so we show a persistent toast: clicking it (a real user
-        // gesture) follows the link in a new tab.
-        /** @ts-ignore */
-        Toastify({
-            text: 'Tap here to join the assignment',
-            destination: '' + message,
-            newWindow: true,
-            duration: -1,
-            close: true,
-            position: 'center',
-            gravity: 'top',
-            className: 'info',
-        }).showToast();
+        // Browsers block window.open() unless it is triggered by a user
+        // gesture. Use a normal link so the user can open it with a click.
+        // Toastify positions itself by setting inline styles, which this
+        // page's Content-Security-Policy blocks; the CSS class positions
+        // this notice without inline styles.
+        let toast = document.getElementById('assignment-toast');
+        if(!toast) {
+            toast = document.createElement('div');
+            toast.id = 'assignment-toast';
+            toast.className = 'assignment-toast';
+            toast.setAttribute('role', 'status');
+
+            let link = document.createElement('a');
+            link.id = 'assignment-toast-link';
+            link.target = '_blank';
+            link.rel = 'noopener noreferrer';
+            toast.appendChild(link);
+
+            let close = document.createElement('button');
+            close.type = 'button';
+            close.className = 'assignment-toast-close';
+            close.setAttribute('aria-label', 'Dismiss assignment link');
+            close.textContent = '×';
+            close.addEventListener('click', () => toast.remove());
+            toast.appendChild(close);
+            document.body.appendChild(toast);
+        }
+        let link = document.getElementById('assignment-toast-link');
+        if(link instanceof HTMLAnchorElement) {
+            link.href = String(message);
+            link.textContent = 'Tap here to join the assignment';
+        }
         break;
     }
     case 'mute': {
@@ -3177,7 +3495,7 @@ commands.leave = {
     f: (c, r) => {
         if(!serverConnection)
             throw new Error('Not connected');
-        serverConnection.close();
+        serverConnection.leave(serverConnection.group);
     }
 };
 
@@ -3442,12 +3760,14 @@ function parseCommand(line) {
  * @param {string} user
  */
 function findUserId(user) {
-    if(user in serverConnection.users)
+    if(user in serverConnection.users &&
+       serverConnection.users[user].data.role !== 'assignmentController')
         return user;
 
     for(let id in serverConnection.users) {
         let u = serverConnection.users[id];
-        if(u && u.username === user)
+        if(u && u.data.role !== 'assignmentController' &&
+           u.username === user)
             return id;
     }
     return null;
@@ -4126,8 +4446,6 @@ async function start() {
         getSelectElement('simulcastselect').value = 'off';
 
     let parms = new URLSearchParams(window.location.search);
-    if(window.location.search)
-        window.history.replaceState(null, '', window.location.pathname);
     setTitle(groupStatus.displayName || capitalise(group));
 
     addFilters();
@@ -4140,7 +4458,15 @@ async function start() {
     }
     queryData = Object.fromEntries(parms);
 
-    if(token) {
+    let savedRole = getSettings().role;
+    let initialRole = validRoles.includes(queryData.role) ?
+        queryData.role :
+        (parms.has('role') ? 'remote' :
+         (validRoles.includes(savedRole) ? savedRole : 'remote'));
+    setRole(initialRole, false);
+    updateRoleURL();
+
+    if(token || getResumeTicket()) {
         await serverConnect();
     } else if(groupStatus.authPortal) {
         window.location.href = groupStatus.authPortal;
