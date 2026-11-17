@@ -12,7 +12,7 @@
             "program": "${workspaceFolder}/galene.go"
         },
         {
-            // plain HTTP (http://localhost:8444), /assignment/ forwarded
+            // plain HTTP (http://localhost:8443), /assignment/ forwarded
             // to the Vite dev server below
             "name": "Galene (dev, with assignment)",
             "type": "go",
@@ -20,7 +20,11 @@
             "mode": "auto",
             "program": "${workspaceFolder}/galene.go",
             "cwd": "${workspaceFolder}",
-            "args": ["-insecure", "-assignment", "http://localhost:5173"]
+            "args": [
+                "-insecure",
+                "-assignment",
+                "http://localhost:5173"
+            ]
         },
         {
             "name": "Assignment service",
@@ -28,7 +32,9 @@
             "request": "launch",
             "program": "${workspaceFolder}/buddy-assignment-app/server/index.js",
             "cwd": "${workspaceFolder}/buddy-assignment-app",
-            "env": { "GALENE_URL": "http://localhost:8444" },
+            "env": {
+                "GALENE_URL": "http://localhost:8443"
+            },
             "console": "integratedTerminal"
         },
         {
@@ -43,7 +49,7 @@
     ],
     "compounds": [
         {
-            // Then open http://localhost:8444/group/test/?role=leader
+            // Then open http://localhost:8443/group/test/?role=leader
             // (and ?role=remote / ?role=buddyDevice in other tabs)
             "name": "Everything (dev)",
             "configurations": [
