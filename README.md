@@ -97,6 +97,16 @@ websocket smoke test run with `npm test` from `buddy-assignment-app/`.
 
 ## Quick start
 
+### Build the assignment app
+The assignment app must be built before starting Galene to avoid the "not implemented" placeholder page:
+```sh
+cd buddy-assignment-app
+npm install
+npm run build
+cd ..
+```
+
+### Run Galene
 ```sh
 git clone https://github.com/jech/galene
 cd galene
