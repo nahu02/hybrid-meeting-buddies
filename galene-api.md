@@ -138,3 +138,41 @@ The full contents of a single token, in JSON.  The exact format may change
 between versions, so a client should first GET a token, update one or more
 fields, then PUT the resulting token.  Allowed methods are HEAD, GET and
 PUT.
+
+## Buddy assignment (hybrid-meeting-buddies)
+
+These endpoints are an extension of this fork, used by the assignment
+service (`buddy-assignment-app/server`).  They act on a running group (one
+that somebody has joined; 404 otherwise) and, unlike the endpoints above,
+currently require no authentication.
+
+### Clients of a group
+
+    /galene-api/v0/.groups/groupname/.clients
+
+The web clients currently in the group, as a JSON array of
+`{"id", "username", "role", "assignedTo"}` objects (`role` and
+`assignedTo` come from the clients' data).  Allowed methods are HEAD and
+GET.
+
+### Buddy assignment
+
+    /galene-api/v0/.groups/groupname/.assignment
+
+PUT replaces all buddy pairs of the group with the JSON array in the body,
+`[{"remote": "<client id>", "buddyDevice": "<client id>"}, ...]`: every
+client's `assignedTo` is cleared, then both members of each pair are
+assigned to each other.  An empty array clears all assignments.  The
+pairs are validated as a whole (each id must name a client of the right
+role, and appear only once); on error nothing changes and the reply is
+400 with the reason.  Returns 204 on success.  The only allowed method is
+PUT.
+
+### Open a URL
+
+    /galene-api/v0/.groups/groupname/.open-url
+
+POST a JSON array `[{"client": "<client id>", "url": "<url>"}, ...]` to
+send each client an `openUrl` user message, which the web client shows
+as a link.  Unknown clients are skipped.  Returns 204.  The only allowed
+method is POST.

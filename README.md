@@ -49,22 +49,22 @@ the server keeps the matching resume state in memory.
 1. **Before assignment** — everyone joins with their role.  The server
    filters the streams per role (see the tables below), so no client ever
    receives a feed it shouldn't see.
-2. **Starting assignments** — the leader presses *Start assignments*.
-   The server clears every client's `assignedTo` and sends every remote
-   and buddy device an `openUrl` message pointing at the assignment
-   interface (a new tab; the browser requires a tap on the toast to open
-   it, since popups may not be opened automatically).
-3. **Assignment** — the assignment interface pairs remote participants
-   with buddy devices. Each participant answers the questions in the
-   assignment page; the page computes a maximum-weight one-to-one match
-   between submitted remote and buddy-device answers. The server validates
-   the pairs and sets both clients' `assignedTo`. The extra controller
-   connections used by the assignment pages are hidden from the meeting
-   participant list, and the result page waits until both sides report the
-   match. Each page receives a short-lived, one-use handoff so participants
-   are not asked to enter their meeting credentials again. Results show both
-   participants' answers side by side only to the two participants in that
-   pair; other participants do not see their answers or pair details.
+2. **Starting assignments** — the leader presses *Start assignments*,
+   which starts a new round in the assignment service
+   (`buddy-assignment-app/server`, reached through Galene under
+   `/assignment/`). The service clears every client's `assignedTo` and asks
+   Galene to send every remote and buddy device an `openUrl` message with
+   its link (a new tab; the browser requires a tap on the toast to open it,
+   since popups may not be opened automatically). Pressing the button again
+   starts a new round, which replaces the previous one.
+3. **Assignment** — each participant answers the questions on the
+   assignment page, which polls the service. Once everybody still in the
+   meeting has answered (or someone presses *Match with those who
+   answered*), the service computes a maximum-weight one-to-one match
+   between remote and buddy-device answers, once, and applies it through
+   Galene's API, which validates the pairs and sets both clients'
+   `assignedTo`. Each page then shows its buddy and both participants'
+   answers side by side.
 4. **After assignment** — participants return to the original tab, where
    the new view has already taken place: the server re-filters the streams
    as soon as `assignedTo` changes, and the client UI switches to the
@@ -89,22 +89,19 @@ the server keeps the matching resume state in memory.
 Remote participants without a buddy (not enough buddy devices, or before
 their assignment) keep the pre-assignment view.
 
-The assignment app source is in `buddy-assignment-app/`. Build it with
-`cd buddy-assignment-app && npm install && npm run build`; Galene serves the
-generated app at `/assignment/`. A fresh checkout without that build still
-serves the placeholder assignment page. The app's matching unit test and
-websocket smoke test run with `npm test` from `buddy-assignment-app/`.
+The assignment logic is a separate service in `buddy-assignment-app/`
+(Node: the question page and the matching). Galene only offers three
+generic API endpoints for it (see [galene-api.md][5]) and forwards
+`/assignment/` to it when started with `-assignment <url>`. See
+`buddy-assignment-app/README.md` for running it.
 
 ## Quick start
 
-### Build the assignment app
-The assignment app must be built before starting Galene to avoid the "not implemented" placeholder page:
+### With Docker
 ```sh
-cd buddy-assignment-app
-npm install
-npm run build
-cd ..
+docker compose up --build
 ```
+This starts Galene on port 8443 and the assignment service behind it.
 
 ### Run Galene
 ```sh

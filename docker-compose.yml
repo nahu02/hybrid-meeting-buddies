@@ -1,12 +1,19 @@
 services:
   galene:
     build: .
-    command: ["-insecure", "-turn", ""]
+    command: ["-insecure", "-turn", "", "-assignment", "http://assignment:3000"]
     ports: 
       - 8443:8443
     volumes:
       - ./groups:/app/groups
       - ./data:/app/data
+    restart: unless-stopped
+
+  # reached through Galene's /assignment/ proxy: no published port
+  assignment:
+    build: ./buddy-assignment-app
+    environment:
+      GALENE_URL: http://galene:8443
     restart: unless-stopped
 
   turn-creds:

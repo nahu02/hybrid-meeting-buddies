@@ -1,9 +1,9 @@
 /**
  * Unit tests for the bipartite buddy matching
- * (src/algorithms/matching.js).  Run with `npm run test:matching`.
+ * (server/algorithms/matching.js).  Run with `npm run test:matching`.
  */
 import assert from "node:assert/strict";
-import { matchBuddies } from "../src/algorithms/matching.js";
+import { matchBuddies } from "../server/algorithms/matching.js";
 
 const embeddings = new Map([
   ["cooking", Float32Array.from([1, 0])],

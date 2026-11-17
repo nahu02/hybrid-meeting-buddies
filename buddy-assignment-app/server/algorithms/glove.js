@@ -47,34 +47,6 @@ export function parseGloveText(text) {
 }
 
 /**
- * Load GloVe embeddings from a static URL with browser caching.
- * @param {string} url
- * @param {(progress: string) => void} [onProgress]
- * @returns {Promise<Map<string, Float32Array>>}
- */
-export async function loadGloveFromUrl(url, onProgress) {
-  if (onProgress) onProgress("Downloading glove.6B.50d.txt...");
-
-  const response = await fetch(url);
-  if (!response.ok) {
-    throw new Error(
-      `Could not load GloVe file from "${url}" (HTTP ${response.status} ${response.statusText}).\n` +
-      `Please ensure "glove.6B.50d.txt" is placed in "public/models/glove.6B.50d.txt".`
-    );
-  }
-
-  if (onProgress) onProgress("Parsing GloVe vectors...");
-  const text = await response.text();
-  const embeddings = parseGloveText(text);
-
-  if (embeddings.size === 0) {
-    throw new Error("GloVe file was loaded but contained 0 valid word vectors.");
-  }
-
-  return embeddings;
-}
-
-/**
  * Convert sentence into an average word vector.
  *
  * @param {string} sentence

@@ -1,28 +1,8 @@
 /**
- * End-to-end smoke test of the buddy assignment flow.  Run with
- * `npm run test:e2e` from buddy-assignment-app/.
- *
- * The test builds the Galene server, starts it with a throwaway
- * anonymous group, and then drives the whole flow over the websocket
- * protocol (the same subset of it that static/protocol.js implements;
- * no media is exchanged):
- *
- *   1. a leader, two remote participants and a buddy device join with
- *      their roles as join data;
- *   2. the leader starts the assignments: every remote and buddy
- *      device receives an openUrl message pointing at its assignment
- *      controller page (/assignment/<group>/<id>?role=<role>);
- *   3. one assignment controller per participant (the pages the app
- *      would open) joins with role assignmentController and submits
- *      its participant's answers;
- *   4. once everybody has answered, the elected controller (smallest
- *      participantId, mirroring src/galene.js) computes the matching
- *      with src/algorithms/matching.js and sends assignBuddies;
- *   5. every client observes the resulting assignedTo data changes.
- *
- * It also checks that the built app is served under /assignment/ (run
- * `npm run build` first) and that unauthorised or invalid assignBuddies
- * requests are rejected.
+ * End-to-end smoke test of the buddy assignment flow: a freshly built
+ * Galene with a throwaway group, and the assignment service with a tiny
+ * GloVe file behind Galene's -assignment proxy.  No media is exchanged.
+ * Run with `npm run test:e2e`, after `npm run build`.
  */
 import { execFileSync } from "node:child_process";
 import { spawn } from "node:child_process";
@@ -37,7 +17,6 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import net from "node:net";
-import { matchBuddies } from "../src/algorithms/matching.js";
 
 const appDir = join(dirname(fileURLToPath(import.meta.url)), "..");
 const repoRoot = join(appDir, "..");
@@ -57,7 +36,7 @@ function freePort() {
 
 /**
  * A minimal Galene protocol client: enough of static/protocol.js to
- * join a group, track the user list and send user/group actions.
+ * join a group and track the user list.
  */
 class Client {
   constructor(id) {
@@ -137,48 +116,19 @@ class Client {
     });
   }
 
-  userAction(kind, value) {
-    this.send({
-      type: "useraction",
-      source: this.id,
-      dest: this.id,
-      username: this.username,
-      kind,
-      value,
-    });
-  }
-
-  groupAction(kind, value) {
-    this.send({
-      type: "groupaction",
-      source: this.id,
-      kind,
-      username: this.username,
-      value,
-    });
-  }
-
-  async expectError(value) {
-    const m = await this.wait(
-      (m) => m.type === "usermessage" && m.kind === "error",
-      `error "${value}"`
-    );
-    assert.equal(m.value, value);
-  }
-
   close() {
     this.ws?.close();
   }
 }
 
-/** Parse an openUrl value the way the app does (src/galene.js). */
-function parseOpenUrl(u) {
-  const m = u.match(/^\/assignment\/(.+)\/([^/?]+)\?(.*)$/);
-  assert.ok(m, `bad openUrl ${u}`);
+
+/** Parse a link the way the page does (src/App.jsx: parseLocation). */
+function parseLink(u) {
+  const url = new URL(u, "http://placeholder");
+  assert.equal(url.pathname, "/assignment/", `bad link ${u}`);
   return {
-    group: m[1],
-    participantId: m[2],
-    role: new URLSearchParams(m[3]).get("role"),
+    round: url.searchParams.get("round"),
+    participant: url.searchParams.get("participant"),
   };
 }
 
@@ -187,8 +137,40 @@ const children = [];
 const clients = {};
 let server = null;
 
+/** Start a child process, collecting its output for error messages. */
+function start(cmd, args, options) {
+  const child = spawn(cmd, args, {
+    ...options, stdio: ["ignore", "pipe", "pipe"],
+  });
+  children.push(child);
+  child.log = "";
+  child.stdout.on("data", (d) => { child.log += d; });
+  child.stderr.on("data", (d) => { child.log += d; });
+  child.on("exit", (code) => {
+    if (code && code !== 0 && !child.killed)
+      console.error(`${cmd} exited: ${code}\n${child.log}`);
+  });
+  return child;
+}
+
+/** Poll f until it returns a truthy value. */
+async function until(f, what, timeout = 10000) {
+  const deadline = Date.now() + timeout;
+  for (;;) {
+    try {
+      const v = await f();
+      if (v)
+        return v;
+    } catch {
+      // not ready yet
+    }
+    if (Date.now() > deadline)
+      throw new Error(`timed out waiting for ${what}`);
+    await new Promise((r) => setTimeout(r, 100));
+  }
+}
+
 async function main() {
-  // build the server
   const bin = join(tmp, "galene");
   execFileSync("go", ["build", "-o", bin, "."], {
     cwd: repoRoot,
@@ -210,56 +192,69 @@ async function main() {
       },
     }) + "\n"
   );
+  // a tiny GloVe file: "painting" and "drawing" are close, "reading"
+  // is far from both
+  const glove = join(tmp, "glove.txt");
+  writeFileSync(glove, [
+    "painting 1 0",
+    "drawing 0.9 0.1",
+    "reading 0 1",
+  ].join("\n") + "\n");
 
   const port = await freePort();
-  server = spawn(bin, [
+  const servicePort = await freePort();
+  const base = `http://127.0.0.1:${port}`;
+
+  start("node", [join(appDir, "server", "index.js")], {
+    env: {
+      ...process.env,
+      PORT: String(servicePort),
+      GALENE_URL: base,
+      GLOVE_PATH: glove,
+    },
+  });
+  server = start(bin, [
     "-http", `127.0.0.1:${port}`,
     "-insecure",
     "-static", join(repoRoot, "static") + "/",
     "-groups", join(tmp, "groups") + "/",
     "-data", join(tmp, "data"),
-  ], { stdio: ["ignore", "pipe", "pipe"] });
-  children.push(server);
-  let log = "";
-  server.stdout.on("data", (d) => { log += d; });
-  server.stderr.on("data", (d) => { log += d; });
-  server.on("exit", (code) => {
-    if (code && code !== 0 && !server.killed)
-      console.error("server exited:", code, log);
-  });
+    "-assignment", `http://127.0.0.1:${servicePort}`,
+  ]);
 
-  const base = `http://127.0.0.1:${port}`;
-  const statusUrl = `${base}/group/${GROUP}/.status`;
-
-  // wait for the server to come up
-  let status = null;
-  for (let i = 0; i < 100; i++) {
-    try {
-      const r = await fetch(statusUrl);
-      if (r.ok) {
-        status = await r.json();
-        break;
-      }
-    } catch {
-      // not up yet
-    }
-    await new Promise((r) => setTimeout(r, 100));
-  }
-  assert.ok(status, "server did not come up");
+  const status = await until(async () => {
+    const r = await fetch(`${base}/group/${GROUP}/.status`);
+    return r.ok && r.json();
+  }, "Galene to come up");
   assert.equal(status.name, GROUP);
   const endpoint = status.endpoint || `ws://127.0.0.1:${port}/ws`;
 
-  // the built assignment app must be served (npm run build first)
+  // the service answers through Galene's proxy (a 404 for an unknown
+  // round comes from the service; the proxy itself answers 502)
+  await until(async () => {
+    const r = await fetch(`${base}/assignment/api/rounds/x/participants/y`);
+    return r.status === 404;
+  }, "the assignment service to come up", 30000);
+
+  const api = async (method, path, body) => {
+    const r = await fetch(`${base}/assignment/api${path}`, {
+      method,
+      headers: body ? { "Content-Type": "application/json" } : {},
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    const text = await r.text();
+    assert.ok(r.ok, `${method} ${path}: ${r.status} ${text}`);
+    return text ? JSON.parse(text) : null;
+  };
+  const view = (round, pid) =>
+    api("GET", `/rounds/${round}/participants/${pid}`);
+
+  // the built page is served (npm run build first)
   {
-    const r = await fetch(`${base}/assignment/${GROUP}/some-id?role=remote`);
-    assert.equal(r.status, 200);
+    const r = await fetch(`${base}/assignment/?round=x&participant=y`);
+    assert.equal(r.status, 200, "run `npm run build` first");
     const page = await r.text();
-    if (!page.includes('id="root"')) {
-      throw new Error(
-        "the assignment page is the placeholder, not the built app; " +
-        "run `npm run build` in buddy-assignment-app first"
-      );
-    }
+    assert.ok(page.includes('id="root"'), "not the built page");
     const m = page.match(/src="(\/assignment\/assets\/[^"]+\.js)"/);
     assert.ok(m, "no script asset in the built index.html");
     const a = await fetch(base + m[1]);
@@ -282,153 +277,89 @@ async function main() {
   };
 
   const leader = await joinAs("leader-id", "leader", "leader");
-  const remote1 = await joinAs("remote-1", "alice", "remote");
-  const remote2 = await joinAs("remote-2", "bob", "remote");
+  await joinAs("remote-1", "alice", "remote");
+  await joinAs("remote-2", "bob", "remote");
   await joinAs("buddy-1", "carol", "buddyDevice");
+  const participants = ["remote-1", "remote-2", "buddy-1"];
 
-  // the leader sees everybody
-  for (const id of ["leader-id", "remote-1", "remote-2", "buddy-1"]) {
+  for (const id of ["leader-id", ...participants]) {
     await leader.wait(
       (m) => m.type === "user" && m.kind === "add" && m.id === id,
       `user add for ${id}`);
   }
 
-  // only the leader may start assignments
-  remote1.groupAction("startAssignments");
-  await remote1.expectError("not authorised");
-
-  // 2. the leader starts the assignments
-  leader.groupAction("startAssignments");
-  const openUrls = {};
-  for (const [id, role] of [
-    ["remote-1", "remote"],
-    ["remote-2", "remote"],
-    ["buddy-1", "buddyDevice"],
-  ]) {
+  // 2. the leader starts a round
+  const { round } = await api("POST", "/rounds", { group: GROUP });
+  for (const id of participants) {
     const m = await clients[id].wait(
       (m) => m.type === "usermessage" && m.kind === "openUrl",
       `openUrl for ${id}`);
     assert.equal(m.privileged, true);
-    openUrls[id] = parseOpenUrl(m.value);
-    assert.deepEqual(openUrls[id], {
-      group: GROUP,
-      participantId: id,
-      role,
-    });
+    assert.deepEqual(parseLink(m.value), { round, participant: id });
   }
-  // the leader gets no openUrl
+  // the leader gets no link
   assert.equal(
     leader.queue.find(
       (m) => m.type === "usermessage" && m.kind === "openUrl"),
     undefined);
 
-  // 3. one controller per participant joins and submits answers
-  const controllers = {};
-  for (const id of ["remote-1", "remote-2", "buddy-1"]) {
-    const url = openUrls[id];
-    const c = new Client(`controller-${id}`);
-    await c.connect(endpoint);
-    c.username = `controller-of-${url.participantId}`;
-    c.join(c.username, {
-      role: "assignmentController",
-      participantId: url.participantId,
-      participantRole: url.role,
-    });
-    await c.wait(
-      (m) => m.type === "joined" && m.kind === "join",
-      `controller join for ${id}`);
-    controllers[id] = c;
+  let v = await view(round, "remote-1");
+  assert.equal(v.status, "collecting");
+  assert.equal(v.me.username, "alice");
+  assert.deepEqual(v.participants.map((p) => p.id).sort(),
+    [...participants].sort());
 
-    c.userAction("setdata", {
-      answers: { 1: "i like painting and cooking", 2: "baking" },
-    });
-    // the controller sees its own data change
-    await c.wait(
-      (m) => m.type === "user" && m.kind === "change" &&
-        m.id === c.id && m.data?.answers,
-      `own answers of ${id}`);
-  }
+  // 3. everybody answers
+  const answers = {
+    "remote-1": { 1: "painting", 2: "painting", 3: "painting" },
+    "remote-2": { 1: "reading", 2: "reading", 3: "reading" },
+    "buddy-1": { 1: "drawing", 2: "drawing", 3: "drawing" },
+  };
+  for (const id of participants)
+    await api("POST", `/rounds/${round}/participants/${id}/answers`,
+      { answers: answers[id] });
 
-  // every controller sees every other participant's answers
-  for (const [ownId, c] of Object.entries(controllers)) {
-    for (const id of ["remote-1", "remote-2", "buddy-1"]) {
-      if (id === ownId)
-        continue; // already confirmed above
-      await c.wait(
-        (m) => m.type === "user" &&
-          (m.kind === "change" || m.kind === "add") &&
-          m.data?.role === "assignmentController" &&
-          m.data?.participantId === id && m.data?.answers,
-        `answers of ${id}`);
-    }
-  }
+  // 4. the service matches the most similar pair and applies it
+  v = await until(async () => {
+    const v = await view(round, "buddy-1");
+    return v.status === "done" && v;
+  }, "the round to be matched");
+  assert.equal(v.buddy.username, "alice");
+  assert.equal(v.buddy.answers[1], "painting");
+  assert.equal((await view(round, "remote-2")).buddy, null);
 
-  // a participant (not a controller) may not assign buddies
-  remote1.groupAction("assignBuddies", [
-    { remote: "remote-1", buddyDevice: "buddy-1" },
-  ]);
-  await remote1.expectError("not authorised");
-
-  // 4. the elected controller (smallest participantId, as in
-  // src/galene.js) runs the matching and applies it
-  const participants = [
-    { id: "remote-1", role: "remote", username: "alice",
-      answers: { 1: "i like painting and cooking", 2: "baking" } },
-    { id: "remote-2", role: "remote", username: "bob",
-      answers: { 1: "i like painting and cooking", 2: "baking" } },
-    { id: "buddy-1", role: "buddyDevice", username: "carol",
-      answers: { 1: "i like painting and cooking", 2: "baking" } },
-  ];
-  const matching = matchBuddies(
-    participants.filter((p) => p.role === "remote"),
-    participants.filter((p) => p.role === "buddyDevice"),
-    [{ id: 1 }, { id: 2 }],
-    null
-  );
-  assert.equal(matching.pairs.length, 1);
-
-  const electedId = ["buddy-1", "remote-1", "remote-2"].sort()[0];
-  const elected = controllers[electedId];
-  elected.groupAction("assignBuddies",
-    matching.pairs.map((p) => ({
-      remote: p.remoteId,
-      buddyDevice: p.buddyDeviceId,
-    })));
-
-  // 5. everybody observes the assignment
-  const pair = matching.pairs[0];
   await leader.wait(
     (m) => m.type === "user" && m.kind === "change" &&
-      m.id === pair.remoteId &&
-      m.data?.assignedTo === pair.buddyDeviceId,
+      m.id === "remote-1" && m.data?.assignedTo === "buddy-1",
     "assignment of the remote");
   await leader.wait(
     (m) => m.type === "user" && m.kind === "change" &&
-      m.id === pair.buddyDeviceId &&
-      m.data?.assignedTo === pair.remoteId,
+      m.id === "buddy-1" && m.data?.assignedTo === "remote-1",
     "assignment of the buddy device");
-  assert.equal(leader.users[pair.remoteId].data.assignedTo,
-    pair.buddyDeviceId);
-  assert.equal(leader.users[pair.buddyDeviceId].data.assignedTo,
-    pair.remoteId);
-  // the second remote stays unassigned
-  await remote2.wait(
-    (m) => m.type === "user" && m.kind === "change" &&
-      m.id === pair.remoteId,
-    "the other remote learns about the assignment");
   assert.equal(leader.users["remote-2"].data.assignedTo, undefined);
 
-  // invalid pairs are rejected: two remotes are not a pair
-  elected.groupAction("assignBuddies", [
-    { remote: "remote-1", buddyDevice: "remote-2" },
-  ]);
-  await elected.expectError("client remote-2 is not a buddyDevice");
+  // 5. starting again supersedes the round and clears the assignment
+  const { round: second } = await api("POST", "/rounds", { group: GROUP });
+  assert.equal((await view(round, "remote-1")).status, "superseded");
+  assert.equal((await view(second, "remote-1")).status, "collecting");
+  await leader.wait(
+    (m) => m.type === "user" && m.kind === "change" &&
+      m.id === "remote-1" && !m.data?.assignedTo,
+    "the assignment to be cleared");
 
-  // unknown ids are rejected
-  elected.groupAction("assignBuddies", [
-    { remote: "nobody", buddyDevice: "buddy-1" },
-  ]);
-  await elected.expectError("no such client: nobody");
+  // Galene's .assignment endpoint validates the pairs
+  const put = (pairs) => fetch(
+    `${base}/galene-api/v0/.groups/${GROUP}/.assignment`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(pairs),
+    });
+  let r = await put([{ remote: "remote-1", buddyDevice: "remote-2" }]);
+  assert.equal(r.status, 400);
+  assert.match(await r.text(), /remote-2 is not a buddyDevice/);
+  r = await put([{ remote: "nobody", buddyDevice: "buddy-1" }]);
+  assert.equal(r.status, 400);
+  assert.match(await r.text(), /no such client: nobody/);
 
   console.log("e2e assignment flow test passed");
 }
@@ -437,6 +368,9 @@ main().then(
   () => cleanup(0),
   (e) => {
     console.error("FAILED:", e.message);
+    for (const p of children)
+      if (p.log)
+        console.error(p.log);
     cleanup(1);
   }
 );
@@ -445,7 +379,8 @@ function cleanup(code) {
   for (const c of Object.values(clients))
     c.close();
   for (const p of children)
-    p.kill();
+    if (p !== server)
+      p.kill();
   if (server) {
     server.on("exit", () => {
       rmSync(tmp, { recursive: true, force: true });

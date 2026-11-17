@@ -1,38 +1,3 @@
-import nspell from "nspell";
-
-/**
- * Load the English Hunspell dictionary files and initialize nspell.
- * @param {string} baseUrl
- * @returns {Promise<any | null>}
- */
-export async function loadSpellChecker(baseUrl = "") {
-  try {
-    const cleanBase = baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`;
-    const affUrl = `${cleanBase}dictionaries/en/index.aff`;
-    const dicUrl = `${cleanBase}dictionaries/en/index.dic`;
-
-    const [affRes, dicRes] = await Promise.all([
-      fetch(affUrl),
-      fetch(dicUrl)
-    ]);
-
-    if (!affRes.ok || !dicRes.ok) {
-      console.warn("Could not fetch spellchecker dictionaries from", affUrl, dicUrl);
-      return null;
-    }
-
-    const [affText, dicText] = await Promise.all([
-      affRes.text(),
-      dicRes.text()
-    ]);
-
-    return nspell(affText, dicText);
-  } catch (error) {
-    console.warn("Spellchecker initialization error:", error);
-    return null;
-  }
-}
-
 /**
  * Check spelling of each word in a sentence and suggest/replace corrections.
  *

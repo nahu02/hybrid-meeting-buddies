@@ -1656,19 +1656,8 @@ func handleClientMessage(c *webClient, m clientMessage) error {
 		trustedUsername := ""
 		trustedPermissions := []string(nil)
 		if m.Data != nil {
-			role, _ := m.Data["role"].(string)
-			if role == "assignmentController" {
-				participantId, _ := m.Data["participantId"].(string)
-				participantRole, _ := m.Data["participantRole"].(string)
-				ticket, _ := m.Data["assignmentTicket"].(string)
-				trustedUsername, _ = consumeAssignmentHandoff(
-					ticket, m.Group, participantId, participantRole,
-				)
-				trusted = trustedUsername != ""
-			} else {
-				resumeTicket, _ = m.Data["resumeTicket"].(string)
-				resume, _ = takeResumeSession(resumeTicket, m.Group)
-			}
+			resumeTicket, _ = m.Data["resumeTicket"].(string)
+			resume, _ = takeResumeSession(resumeTicket, m.Group)
 		}
 		if resume != nil {
 			c.data = resume.data
@@ -1951,44 +1940,6 @@ func handleClientMessage(c *webClient, m clientMessage) error {
 			if err != nil {
 				log.Printf("broadcast(clearchat): %v", err)
 			}
-		case "startAssignments":
-			// Only the leader may start assignments.  The role is
-			// self-declared in the join data (?role=leader).
-			role, _ := c.Data()["role"].(string)
-			if role != "leader" {
-				return c.error(group.UserError("not authorised"))
-			}
-			startAssignments(g)
-		case "assignBuddies":
-			// Only the assignment controller (the page the
-			// participants open after "Start assignments", which
-			// joins with role "assignmentController") or an
-			// operator may apply assignments.
-			role, _ := c.Data()["role"].(string)
-			if role != "assignmentController" &&
-				!slices.Contains(c.permissions, "op") {
-				return c.error(group.UserError("not authorised"))
-			}
-			pairs, err := parseBuddyPairs(m.Value)
-			if err != nil {
-				return c.error(err)
-			}
-			err = validateBuddyPairs(pairs, func(id string) (bool, string) {
-				cc := g.GetClient(id)
-				if cc == nil {
-					return false, ""
-				}
-				wc, ok := cc.(*webClient)
-				if !ok {
-					return false, ""
-				}
-				r, _ := wc.Data()["role"].(string)
-				return true, r
-			})
-			if err != nil {
-				return c.error(err)
-			}
-			assignBuddies(g, pairs)
 		case "lock", "unlock":
 			if !slices.Contains(c.permissions, "op") {
 				return c.error(group.UserError("not authorised"))

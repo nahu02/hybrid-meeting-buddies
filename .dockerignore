@@ -9,4 +9,3 @@ CHANGES
 **/*_test.go
 **/node_modules
 buddy-assignment-app/dist
-static/assignment

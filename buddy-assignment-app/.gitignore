@@ -14,8 +14,8 @@ dist-ssr
 .env.*
 !.env.example
 
-public/models/*
-!public/models/.gitkeep
+models/*
+!models/.gitkeep
 *.txt
 
 .vscode/*

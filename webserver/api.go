@@ -16,6 +16,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/jech/galene/group"
+	"github.com/jech/galene/rtpconn"
 	"github.com/jech/galene/stats"
 	"github.com/jech/galene/token"
 )
@@ -256,6 +257,10 @@ func apiGroupHandler(w http.ResponseWriter, r *http.Request, pth string) {
 		return
 	} else if kind == ".tokens" {
 		tokensHandler(w, r, g, rest)
+		return
+	} else if (kind == ".clients" || kind == ".assignment" ||
+		kind == ".open-url") && rest == "" {
+		assignmentAPIHandler(w, r, g, kind)
 		return
 	} else if kind != "" {
 		if !checkAdmin(w, r, g) {
@@ -755,4 +760,67 @@ func tokensHandler(w http.ResponseWriter, r *http.Request, g, pth string) {
 	}
 	methodNotAllowed(w, "HEAD, GET, PUT, DELETE")
 	return
+}
+
+// assignmentAPIHandler serves the endpoints used by the assignment
+// service (buddy-assignment-app/server) on a running group g:
+//
+//	GET  .clients     the group's clients: [{id, username, role, assignedTo}]
+//	PUT  .assignment  replace all buddy pairs: [{remote, buddyDevice}]
+//	POST .open-url    offer links to clients: [{client, url}]
+func assignmentAPIHandler(w http.ResponseWriter, r *http.Request, g, kind string) {
+	grp := group.Get(g)
+	if grp == nil {
+		// the group isn't running (nobody has joined it yet)
+		notFound(w)
+		return
+	}
+
+	switch kind {
+	case ".clients":
+		if r.Method != "HEAD" && r.Method != "GET" {
+			methodNotAllowed(w, "HEAD, GET")
+			return
+		}
+		w.Header().Set("cache-control", "no-cache")
+		sendJSON(w, r, rtpconn.GroupClients(grp))
+	case ".assignment":
+		if r.Method != "PUT" {
+			methodNotAllowed(w, "PUT")
+			return
+		}
+		var pairs []rtpconn.BuddyPair
+		if done := getJSON(w, r, &pairs); done {
+			return
+		}
+		err := rtpconn.SetAssignment(grp, pairs)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	case ".open-url":
+		if r.Method != "POST" {
+			methodNotAllowed(w, "POST")
+			return
+		}
+		var targets []struct {
+			Client string `json:"client"`
+			URL    string `json:"url"`
+		}
+		if done := getJSON(w, r, &targets); done {
+			return
+		}
+		for _, t := range targets {
+			// a client that has just left is not an error
+			// worth failing the whole request for
+			err := rtpconn.OpenURL(grp, t.Client, t.URL)
+			if err != nil {
+				log.Printf("open-url %v: %v", t.Client, err)
+			}
+		}
+		w.WriteHeader(http.StatusNoContent)
+	default:
+		notFound(w)
+	}
 }

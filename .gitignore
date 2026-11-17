@@ -8,11 +8,8 @@
 
 /buddy-assignment-app/node_modules/
 /buddy-assignment-app/dist/
-/buddy-assignment-app/public/models/*
-!/buddy-assignment-app/public/models/.gitkeep
-
-# build output of the assignment app (buddy-assignment-app/vite.config.js)
-/static/assignment/
+/buddy-assignment-app/models/*
+!/buddy-assignment-app/models/.gitkeep
 
 **/AGENTS.md
 !/AGENTS.md

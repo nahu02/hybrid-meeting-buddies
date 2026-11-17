@@ -108,7 +108,9 @@ function updateRoleClasses() {
     let assignmentActive = Object.values(serverConnection.users || {}).some(
         user => user.data && user.data.assignedTo,
     );
-    if(assignmentActive)
+    // Only our own assignment hides the link: a new round's link
+    // arrives before the old round's assignments are cleared.
+    if(data.assignedTo)
         document.getElementById('assignment-toast')?.remove();
     for(let r of validRoles)
         body.classList.remove('role-' + r);
@@ -634,9 +636,25 @@ getButtonElement('presentbutton').onclick = async function(e) {
     }
 };
 
-getButtonElement('startassignmentsbutton').onclick = function(e) {
+getButtonElement('startassignmentsbutton').onclick = async function(e) {
     e.preventDefault();
-    serverConnection.groupAction('startAssignments');
+    // Handled by the assignment service behind Galene's /assignment/
+    // proxy.  Pressing again starts a new round that replaces the old one.
+    let button = this;
+    button.disabled = true;
+    try {
+        let r = await fetch('/assignment/api/rounds', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({group: group}),
+        });
+        if(!r.ok)
+            throw new Error(`${r.status} ${await r.text()}`);
+    } catch(err) {
+        displayError(`Couldn't start assignments: ${err.message}`);
+    } finally {
+        button.disabled = false;
+    }
 };
 
 getSelectElement('roleselect').onchange = function(e) {
@@ -1256,9 +1274,7 @@ function doSimulcast() {
     default:
         let count = 0;
         for(let n in serverConnection.users) {
-            let user = serverConnection.users[n];
-            if(!user.permissions["system"] &&
-               user.data.role !== 'assignmentController') {
+            if(!serverConnection.users[n].permissions["system"]) {
                 count++;
                 if(count > 2)
                     break;
@@ -2400,8 +2416,6 @@ function userMenu(elt) {
  * @param {user} userinfo
  */
 function addUser(id, userinfo) {
-    if(userinfo.data.role === 'assignmentController')
-        return;
     let div = document.getElementById('users');
     let user = document.createElement('div');
     user.id = 'user-' + id;
@@ -2448,11 +2462,6 @@ function addUser(id, userinfo) {
   */
 function changeUser(id, userinfo) {
     let elt = document.getElementById('user-' + id);
-    if(userinfo.data.role === 'assignmentController') {
-        if(elt)
-            delUser(id);
-        return;
-    }
     if(!elt) {
         addUser(id, userinfo);
         return;
@@ -2499,19 +2508,7 @@ function setUserStatus(id, elt, userinfo) {
 function delUser(id) {
     let div = document.getElementById('users');
     let user = document.getElementById('user-' + id);
-    if(!user)
-        return false;
     div.removeChild(user);
-    return true;
-}
-
-function meetingUserCount() {
-    let count = 0;
-    for(let id in serverConnection.users) {
-        if(serverConnection.users[id].data.role !== 'assignmentController')
-            count++;
-    }
-    return count;
 }
 
 /**
@@ -2521,15 +2518,13 @@ function meetingUserCount() {
 function gotUser(id, kind) {
     switch(kind) {
     case 'add':
-        let addedUser = serverConnection.users[id];
-        addUser(id, addedUser);
-        if(addedUser.data.role !== 'assignmentController' &&
-           meetingUserCount() === 3)
+        addUser(id, serverConnection.users[id]);
+        if(Object.keys(serverConnection.users).length === 3)
             reconsiderSendParameters();
         break;
     case 'delete':
-        let wasVisible = delUser(id);
-        if(wasVisible && meetingUserCount() < 3)
+        delUser(id);
+        if(Object.keys(serverConnection.users).length < 3)
             scheduleReconsiderParameters();
         break;
     case 'change':
@@ -3760,14 +3755,12 @@ function parseCommand(line) {
  * @param {string} user
  */
 function findUserId(user) {
-    if(user in serverConnection.users &&
-       serverConnection.users[user].data.role !== 'assignmentController')
+    if(user in serverConnection.users)
         return user;
 
     for(let id in serverConnection.users) {
         let u = serverConnection.users[id];
-        if(u && u.data.role !== 'assignmentController' &&
-           u.username === user)
+        if(u && u.username === user)
             return id;
     }
     return null;

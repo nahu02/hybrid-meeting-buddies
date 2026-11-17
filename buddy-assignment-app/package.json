@@ -5,15 +5,18 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:server": "node --watch server/index.js",
     "build": "vite build",
+    "start": "node server/index.js",
     "lint": "oxlint",
-    "preview": "vite preview",
     "test:matching": "node test/matching.test.mjs",
+    "test:rounds": "node test/rounds.test.mjs",
     "test:e2e": "node test/e2e.mjs",
-    "test": "npm run test:matching && npm run test:e2e"
+    "test": "npm run test:matching && npm run test:rounds && npm run test:e2e"
   },
   "dependencies": {
     "dictionary-en": "^4.0.0",
+    "express": "^5.3.0",
     "nspell": "^2.1.5",
     "react": "^19.3.1",
     "react-dom": "^19.3.1"
