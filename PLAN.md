@@ -18,8 +18,9 @@ The following is in place and must not be regressed:
 - **Server-side stream filtering** — `filterTracksByRoles`
   (`rtpconn/webclient.go:1143`), called from `pushDownConn`, delivers only
   the streams each role is allowed to see:
-    - the _leader_ never receives buddy device feeds, and stops receiving
-      audio of a remote whose buddy set `audioRoute: local`;
+    - the _leader_ never receives buddy device feeds; from an assigned
+      remote it receives only audio and screenshare, and no audio when
+      that remote's buddy set `audioRoute: local`;
     - a _buddy device_ receives nothing before assignment; after
       assignment only its buddy's stream (video always, audio only when
       its own `audioRoute` is `local`), never screenshares;

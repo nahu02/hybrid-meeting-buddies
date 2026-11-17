@@ -998,18 +998,6 @@ body.role-buddyDevice.assigned #peers {
     text-align: center;
 }
 
-body.role-buddyDevice.assigned #peers .peer-role-hidden {
-    display: none !important;
-}
-
-body.role-leader.assignment-active #peers .peer-role-hidden {
-    display: none !important;
-}
-
-body.role-remote.assigned #peers .peer-role-hidden {
-    display: none !important;
-}
-
 body.role-buddyDevice.assigned #peers .peer-fullscreen {
     position: absolute;
     inset: 0;

@@ -1226,11 +1226,10 @@ func filterTracksByRoles(up conn.Up, c *webClient, requested []conn.UpTrack) ([]
 			requested = []conn.UpTrack{}
 		}
 
-		if upRole == "remote" {
-			// A remote with a buddy may route its audio locally.
-			if upAssignedTo == "" {
-				return requested, nil
-			}
+		// An assigned remote is seen through its buddy device, not on
+		// the TV: the leader keeps only its audio and screen share.
+		if upRole == "remote" && upAssignedTo != "" {
+			requested = filterTrackType(requested, upClientLabel, audio|screenshare)
 
 			// disregard audio feeds if the buddy's audioRoute == local
 			buddyOfUpClient := c.group.GetClient(upAssignedTo)
@@ -1242,9 +1241,7 @@ func filterTracksByRoles(up conn.Up, c *webClient, requested []conn.UpTrack) ([]
 			buddyOfUpClientAudioRoute, _ := buddyOfUpClient.Data()["audioRoute"].(string)
 
 			if buddyOfUpClientAudioRoute == "local" {
-				// Keep the remote's camera visible to the leader while
-				// suppressing audio that is routed through the buddy.
-				requested = filterTrackType(requested, upClientLabel, camera|screenshare)
+				requested = filterTrackType(requested, upClientLabel, screenshare)
 			}
 		}
 	}
@@ -1272,15 +1269,15 @@ func filterTracksByRoles(up conn.Up, c *webClient, requested []conn.UpTrack) ([]
 
 		myBuddyButLeaderAudio := downAssignedTo == upUserId && upAudioRoute != "local"
 		if myBuddyButLeaderAudio {
-			// The remote still needs the paired buddy device's camera
-			// (the room view); only its audio is routed through the
-			// leader in this mode.
-			requested = filterTrackType(requested, upClientLabel, camera|screenshare)
+			// the buddy's audio is routed through the leader
+			requested = filterTrackType(requested, upClientLabel, camera)
 		}
 
-		// Keep the leader's camera visible to remotes after assignment.
-		// Only change its audio according to the paired buddy's route.
+		// An assigned remote sees the room through its buddy device,
+		// not through the leader's camera.
 		if upRole == "leader" && downAssignedTo != "" {
+			requested = filterTrackType(requested, upClientLabel, audio|screenshare)
+
 			buddyClient := c.group.GetClient(downAssignedTo)
 			if buddyClient == nil {
 				return nil, fmt.Errorf("client %q has assignedTo=%q, but no such client in group %q",
@@ -1290,7 +1287,7 @@ func filterTracksByRoles(up conn.Up, c *webClient, requested []conn.UpTrack) ([]
 			buddyClientAudioRoute, _ := buddyClient.Data()["audioRoute"].(string)
 
 			if buddyClientAudioRoute == "local" {
-				requested = filterTrackType(requested, upClientLabel, camera|screenshare)
+				requested = filterTrackType(requested, upClientLabel, screenshare)
 			}
 		}
 	}

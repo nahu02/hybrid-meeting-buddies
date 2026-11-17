@@ -105,20 +105,15 @@ function updateRoleClasses() {
     let data = ownUserData();
     let role = joinedRole();
     let body = document.body;
-    let assignmentActive = Object.values(serverConnection.users || {}).some(
-        user => user.data && user.data.assignedTo,
-    );
     // Only our own assignment hides the link: a new round's link
     // arrives before the old round's assignments are cleared.
     if(data.assignedTo)
         document.getElementById('assignment-toast')?.remove();
     for(let r of validRoles)
         body.classList.remove('role-' + r);
-    body.classList.remove('assigned', 'unassigned', 'assignment-active');
+    body.classList.remove('assigned', 'unassigned');
     if(role)
         body.classList.add('role-' + role);
-    if(assignmentActive)
-        body.classList.add('assignment-active');
     if(role === 'remote' || role === 'buddyDevice')
         body.classList.add(data.assignedTo ? 'assigned' : 'unassigned');
     return {role: role, data: data};
@@ -134,8 +129,7 @@ function updateRoleView() {
 
     let peers = document.getElementById('peers');
     for(let peer of Array.from(peers.children)) {
-        peer.classList.remove('peer-fullscreen', 'peer-pip',
-                             'peer-role-hidden');
+        peer.classList.remove('peer-fullscreen');
         let localId = peer.id.replace(/^peer-/, '');
         let up = serverConnection.up[localId];
         let down = serverConnection.down[localId];
@@ -147,11 +141,11 @@ function updateRoleView() {
                 removePeerElement(peer);
                 continue;
             }
-            // Generic role and media visibility rules can hide downstream
-            // peers (for example when displayAll is off). The assigned
+            // Generic media visibility rules can hide downstream peers
+            // (for example when displayAll is off). The assigned
             // remote is the one exception: it must always be the visible
             // full-screen peer in this view.
-            peer.classList.remove('peer-hidden', 'peer-role-hidden');
+            peer.classList.remove('peer-hidden');
             peer.classList.add('peer-fullscreen');
         }
     }
@@ -168,7 +162,7 @@ function updateRoleView() {
         let peer = target &&
             document.getElementById('peer-' + target.localId);
         if(peer) {
-            peer.classList.remove('peer-hidden', 'peer-role-hidden');
+            peer.classList.remove('peer-hidden');
             peer.classList.add('peer-fullscreen');
             let media = peer.querySelector('.media');
             if(media)
@@ -1856,7 +1850,7 @@ async function setMedia(c, mirror, video) {
        c.source === ownUserData().assignedTo && !c.up) {
         // A paired remote's camera is the buddy-device UI, independent of
         // Galene's generic "display all peers" preference.
-        div.classList.remove('peer-hidden', 'peer-role-hidden');
+        div.classList.remove('peer-hidden');
         div.classList.add('peer-fullscreen');
     }
 
