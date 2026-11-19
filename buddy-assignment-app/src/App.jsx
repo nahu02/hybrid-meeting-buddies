@@ -221,21 +221,21 @@ function App() {
           <div className="assigned-pairs-card">
             <h3>Your answers</h3>
             <div className="pairs-list">
-              <div className="pair-pill">
+              <div className="comparison-table-wrap">
                 <table className="answers-table">
                   <thead>
                     <tr>
-                      <th>Question</th>
-                      <th>{me.username}</th>
-                      <th>{buddy.username}</th>
+                      <th scope="col">Question</th>
+                      <th scope="col">{me.username}</th>
+                      <th scope="col">{buddy.username}</th>
                     </tr>
                   </thead>
                   <tbody>
                     {questions.map((q) => (
                       <tr key={q.id}>
-                        <th>{q.text}</th>
-                        <td>{mine[q.id]}</td>
-                        <td>{buddy.answers[q.id]}</td>
+                        <th scope="row">{q.text}</th>
+                        <td data-label={me.username}>{mine[q.id]}</td>
+                        <td data-label={buddy.username}>{buddy.answers[q.id]}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -274,7 +274,11 @@ function App() {
   }
 
   return (
-    <div className="app-container">
+    <div className={
+      view?.status === "done"
+        ? "app-container results-container"
+        : "app-container"
+    }>
       {error && view && <p className="error-note">{error}</p>}
       {render()}
     </div>

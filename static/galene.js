@@ -131,8 +131,14 @@ function updateRoleView() {
     for(let peer of Array.from(peers.children)) {
         peer.classList.remove('peer-fullscreen');
         let localId = peer.id.replace(/^peer-/, '');
-        let up = serverConnection.up[localId];
-        let down = serverConnection.down[localId];
+        // Stream maps are keyed by server stream id, while peer elements
+        // are keyed by the client-local id (which can change on replace).
+        let up = Object.values(serverConnection.up).find(
+            (c) => c.localId === localId
+        );
+        let down = Object.values(serverConnection.down).find(
+            (c) => c.localId === localId
+        );
         if(role === 'buddyDevice') {
             // The buddy device has a single video surface: its assigned
             // remote. Never keep self previews, other peers, or hidden grid
@@ -387,7 +393,6 @@ function showVideo() {
     let hasmedia = document.getElementById('peers').childElementCount > 0;
     if(isMobileLayout()) {
         setVisibility('show-video', false);
-        setVisibility('collapse-video', hasmedia);
     }
     setVisibility('video-container', hasmedia);
     scheduleReconsiderDownRate();
@@ -418,7 +423,6 @@ function setConnected(connected) {
     let userbox = document.getElementById('profile');
     let connectionbox = document.getElementById('login-container');
     if(connected) {
-        clearChat();
         let testCamera =  /** @type{HTMLDetailsElement} */
             (document.getElementById('test-camera'));
         // this causes the camera test to stop running
@@ -602,9 +606,7 @@ function setViewportHeight() {
     document.documentElement.style.setProperty(
         '--vh', `${window.innerHeight/100}px`,
     );
-    if (!getVisibility('left')) {
-        showVideo();
-    }
+    showVideo();
     // Ajust video component size
     resizePeers();
 }
@@ -658,12 +660,40 @@ getSelectElement('roleselect').onchange = function(e) {
     setRole(this.value, true);
 };
 
+let audioRouteToastTimer = null;
+
+function showAudioRouteToast(message) {
+    let toast = document.getElementById('audio-route-toast');
+    if(!toast) {
+        toast = document.createElement('div');
+        toast.id = 'audio-route-toast';
+        toast.className = 'audio-route-toast';
+        toast.setAttribute('role', 'status');
+        toast.setAttribute('aria-live', 'polite');
+        document.body.appendChild(toast);
+    }
+    toast.textContent = message;
+    if(audioRouteToastTimer)
+        clearTimeout(audioRouteToastTimer);
+    audioRouteToastTimer = setTimeout(() => {
+        toast.remove();
+        audioRouteToastTimer = null;
+    }, 5000);
+}
+
 getButtonElement('audioroutebutton').onclick = function(e) {
     e.preventDefault();
     let data = ownUserData();
     let audioRoute = data.audioRoute === 'local' ? 'leader' : 'local';
     serverConnection.userAction('setdata', serverConnection.id,
                                 {audioRoute: audioRoute});
+    let assignedUser = data.assignedTo &&
+        serverConnection.users[data.assignedTo];
+    let remoteName = assignedUser?.username || 'your buddy';
+    let destination = audioRoute === 'leader' ? 'TV' : 'phone';
+    showAudioRouteToast(
+        `Passing ${remoteName} audio through ${destination}`
+    );
 };
 
 getButtonElement('flipcamerabutton').onclick = function(e) {
@@ -750,7 +780,6 @@ function setButtonsVisibility() {
     setVisibility('sendform', canPresent);
     setVisibility('simulcastform', canPresent);
 
-    setVisibility('collapse-video', mediacount && mobilelayout);
 }
 
 /**
@@ -1718,7 +1747,10 @@ function muteLocalTracks(mute) {
 function forceDownRate(id, force, value) {
     let c = serverConnection.down[id];
     if(!c)
-        throw new Error("Unknown down stream");
+        return;
+    if(joinedRole() === 'buddyDevice' &&
+       c.source !== ownUserData().assignedTo)
+        return;
     if('requested' in c.userdata) {
         if(force)
             c.userdata.requested.force = !!value;
@@ -1769,7 +1801,10 @@ function reconsiderDownRate(id) {
     }
     let c = serverConnection.down[id];
     if(!c)
-        throw new Error("Unknown down stream");
+        return;
+    if(joinedRole() === 'buddyDevice' &&
+       c.source !== ownUserData().assignedTo)
+        return;
     let normalrequest = mapRequestLabel(getSettings().request, c.label);
 
     let requestlow = mapVideoToLow(normalrequest);
@@ -1784,7 +1819,7 @@ function reconsiderDownRate(id) {
         let media = /** @type {HTMLVideoElement} */
             (document.getElementById('media-' + c.localId));
         if(!media)
-            throw new Error("No media for stream");
+            return;
         let w = media.scrollWidth;
         let h = media.scrollHeight;
         if(w && h && w * h <= 320 * 240) {
@@ -1880,6 +1915,7 @@ async function setMedia(c, mirror, video) {
 
     if(!video && media.srcObject !== c.stream)
         media.srcObject = c.stream;
+    media.onloadedmetadata = resizePeers;
 
     if(!c.up) {
         media.onfullscreenchange = function(e) {
@@ -2209,7 +2245,15 @@ function resizePeers() {
     let count =
         Object.keys(serverConnection.up).length +
         Object.keys(serverConnection.down).length;
-    let columns = Math.ceil(Math.sqrt(count));
+    let landscapeVideos = Array.from(
+        peers.querySelectorAll('.peer:not(.peer-hidden) video.media')
+    );
+    let stackLandscapeVideos = isMobileLayout() && landscapeVideos.length > 1 &&
+        landscapeVideos.every((media) =>
+            media.videoWidth > 0 && media.videoHeight > 0 &&
+            media.videoWidth > media.videoHeight
+        );
+    let columns = stackLandscapeVideos ? 1 : Math.ceil(Math.sqrt(count));
     if (!count)
         // No video, nothing to resize.
         return;
@@ -2219,7 +2263,9 @@ function resizePeers() {
     let rows = Math.ceil(count / columns);
     let margins = (rows - 1) * 5 + 40;
 
-    if (count <= 2 && container.offsetHeight > container.offsetWidth) {
+    if(stackLandscapeVideos) {
+        peers.style['grid-template-columns'] = "repeat(1, minmax(0, 1fr))";
+    } else if (count <= 2 && container.offsetHeight > container.offsetWidth) {
         peers.style['grid-template-columns'] = "repeat(1, 1fr)";
         rows = count;
     } else {
@@ -2696,11 +2742,6 @@ async function gotJoined(kind, group, perms, status, data, error, message,
         return;
     }
 
-    let input = /** @type{HTMLTextAreaElement} */
-        (document.getElementById('input'));
-    input.placeholder = 'Type /help for help';
-    setTimeout(() => {input.placeholder = '';}, 8000);
-
     if(status.locked)
         displayWarning('This group is locked');
 
@@ -2987,16 +3028,6 @@ function gotUserMessage(id, dest, username, time, privileged, kind, error, messa
         displayWarning(`You have been muted${by}`);
         break;
     }
-    case 'clearchat': {
-        if(!privileged) {
-            console.error(`Got unprivileged message of kind ${kind}`);
-            return;
-        }
-        let id = message && message.id;
-        let userId = message && message.userId;
-        clearChat(id, userId);
-        break;
-    }
     case 'token': {
         if(!privileged) {
             console.error(`Got unprivileged message of kind ${kind}`);
@@ -3105,224 +3136,6 @@ function formatToken(token, details) {
     ];
 }
 
-const urlRegexp = /https?:\/\/[-a-zA-Z0-9@:%/._\\+~#&()=?]+[-a-zA-Z0-9@:%/_\\+~#&()=]/g;
-
-/**
- * @param {string} text
- * @returns {HTMLDivElement}
- */
-function formatText(text) {
-    let r = new RegExp(urlRegexp);
-    let result = [];
-    let pos = 0;
-    while(true) {
-        let m = r.exec(text);
-        if(!m)
-            break;
-        result.push(document.createTextNode(text.slice(pos, m.index)));
-        let a = document.createElement('a');
-        a.href = m[0];
-        a.textContent = m[0];
-        a.target = '_blank';
-        a.rel = 'noreferrer noopener';
-        result.push(a);
-        pos = m.index + m[0].length;
-    }
-    result.push(document.createTextNode(text.slice(pos)));
-
-    let div = document.createElement('div');
-    result.forEach(e => {
-        div.appendChild(e);
-    });
-    return div;
-}
-
-/**
- * @param {Date} time
- * @returns {string}
- */
-function formatTime(time) {
-    let delta = Date.now() - time.getTime();
-    let m = time.getMinutes();
-    if(delta > -30000)
-        return time.getHours() + ':' + ((m < 10) ? '0' : '') + m;
-    return time.toLocaleString();
-}
-
-/**
- * @typedef {Object} lastMessage
- * @property {string} [nick]
- * @property {string} [peerId]
- * @property {string} [dest]
- * @property {Date} [time]
- */
-
-/** @type {lastMessage} */
-let lastMessage = {};
-
-/**
- * @param {string} id
- * @param {string} peerId
- * @param {string} dest
- * @param {string} nick
- * @param {Date} time
- * @param {boolean} privileged
- * @param {boolean} history
- * @param {string} kind
- * @param {string|HTMLElement} message
- */
-function addToChatbox(id, peerId, dest, nick, time, privileged, history, kind, message) {
-    if(kind === 'caption') {
-        displayCaption(message);
-        return;
-    }
-
-    let row = document.createElement('div');
-    row.classList.add('message-row');
-    let container = document.createElement('div');
-    container.classList.add('message');
-    row.appendChild(container);
-    let footer = document.createElement('p');
-    footer.classList.add('message-footer');
-    if(!peerId)
-        container.classList.add('message-system');
-    if(serverConnection && peerId === serverConnection.id)
-        container.classList.add('message-sender');
-    if(dest)
-        container.classList.add('message-private');
-
-    if(id)
-        container.dataset.id = id;
-    if(peerId) {
-        container.dataset.peerId = peerId;
-        container.dataset.username = nick;
-        container.addEventListener('click', function(e) {
-            if(e.detail !== 2)
-                return;
-            let elt = e.currentTarget;
-            if(!elt || !(elt instanceof HTMLElement))
-                throw new Error("Couldn't find chat message div");
-            chatMessageMenu(elt);
-        });
-    }
-
-    /** @type{HTMLElement} */
-    let body;
-    if(message instanceof HTMLElement) {
-        body = message;
-    } else if(typeof message === 'string') {
-        body = formatText(message);
-    } else {
-        throw new Error('Cannot add element to chatbox');
-    }
-
-    if(kind !== 'me') {
-        let doHeader = true;
-        if(lastMessage.nick !== (nick || null) ||
-           lastMessage.peerId !== (peerId || null) ||
-           lastMessage.dest !== (dest || null) ||
-           !time || !lastMessage.time) {
-            doHeader = true;
-        } else {
-            let delta = time.getTime() - lastMessage.time.getTime();
-            doHeader = delta < 0 || delta > 60000;
-        }
-
-        if(doHeader) {
-            let header = document.createElement('p');
-            let user = document.createElement('span');
-            let u = dest && serverConnection.users[dest];
-            let name = (u && u.username);
-            user.textContent = dest ?
-                `${nick || '(anon)'} \u2192 ${name || '(anon)'}` :
-                (nick || '(anon)');
-            user.classList.add('message-user');
-            header.appendChild(user);
-            header.classList.add('message-header');
-            container.appendChild(header);
-            if(time) {
-                let tm = document.createElement('span');
-                tm.textContent = formatTime(time);
-                tm.classList.add('message-time');
-                header.appendChild(tm);
-            }
-        }
-
-        let p = document.createElement('p');
-        p.appendChild(body);
-        p.classList.add('message-content');
-        container.appendChild(p);
-        lastMessage.nick = (nick || null);
-        lastMessage.peerId = peerId;
-        lastMessage.dest = (dest || null);
-        lastMessage.time = (time || null);
-    } else {
-        let asterisk = document.createElement('span');
-        asterisk.textContent = '*';
-        asterisk.classList.add('message-me-asterisk');
-        let user = document.createElement('span');
-        user.textContent = nick || '(anon)';
-        user.classList.add('message-me-user');
-        body.classList.add('message-me-content');
-        container.appendChild(asterisk);
-        container.appendChild(user);
-        container.appendChild(body);
-        container.classList.add('message-me');
-        lastMessage = {};
-    }
-    container.appendChild(footer);
-
-    let box = document.getElementById('box');
-    box.appendChild(row);
-    if(box.scrollHeight > box.clientHeight) {
-        box.scrollTop = box.scrollHeight - box.clientHeight;
-    }
-
-    return;
-}
-
-/**
- * @param {HTMLElement} elt
- */
-function chatMessageMenu(elt) {
-    if(!(serverConnection && serverConnection.permissions &&
-         serverConnection.permissions.indexOf('op') >= 0))
-        return;
-
-    let messageId = elt.dataset.id;
-    let peerId = elt.dataset.peerId;
-    if(!peerId)
-        return;
-    let username = elt.dataset.username;
-    let u = username || 'user';
-
-    let items = [];
-    if(messageId)
-        items.push({label: 'Delete message', onClick: () => {
-            serverConnection.groupAction('clearchat', {
-                id: messageId,
-                userId: peerId,
-            });
-        }});
-    items.push({label: `Delete all from ${u}`,
-                onClick: () => {
-                    serverConnection.groupAction('clearchat', {
-                        userId: peerId,
-                    });
-                }});
-    items.push({label: `Identify ${u}`, onClick: () => {
-        serverConnection.userAction('identify', peerId);
-    }});
-    items.push({label: `Kick out ${u}`, onClick: () => {
-        serverConnection.userAction('kick', peerId);
-    }});
-
-    /** @ts-ignore */
-    new Contextual({
-        items: items,
-    });
-}
-
 /**
  * @param {string|HTMLElement} message
  */
@@ -3359,37 +3172,7 @@ function displayCaption(message) {
  * @param {string|HTMLElement} message
  */
 function localMessage(message) {
-    return addToChatbox(null, null, null, null, new Date(), false, false, '', message);
-}
-
-/**
- * @param {string} [id]
- * @param {string} [userId]
- */
-function clearChat(id, userId) {
-    lastMessage = {};
-
-    let box = document.getElementById('box');
-    if(!id && !userId) {
-        box.textContent = '';
-        return;
-    }
-
-    let elts = box.children;
-    let i = 0;
-    while(i < elts.length) {
-        let row = elts.item(i);
-        if(row instanceof HTMLDivElement) {
-            let div = row.firstChild;
-            if(div instanceof HTMLDivElement)
-                if((!id || div.dataset.id === id) &&
-                   div.dataset.peerId === userId) {
-                    box.removeChild(row);
-                    continue;
-                }
-        }
-        i++;
-    }
+    displayMessage(message);
 }
 
 /**
@@ -3485,14 +3268,6 @@ commands.leave = {
         if(!serverConnection)
             throw new Error('Not connected');
         serverConnection.leave(serverConnection.group);
-    }
-};
-
-commands.clear = {
-    predicate: operatorPredicate,
-    description: 'clear the chat history',
-    f: (c, r) => {
-        serverConnection.groupAction('clearchat');
     }
 };
 
@@ -3759,22 +3534,6 @@ function findUserId(user) {
     }
     return null;
 }
-
-commands.msg = {
-    parameters: 'user message',
-    description: 'send a private message',
-    f: (c, r) => {
-        let p = parseCommand(r);
-        if(!p[0])
-            throw new Error('/msg requires parameters');
-        let id = findUserId(p[0]);
-        if(!id)
-            throw new Error(`Unknown user ${p[0]}`);
-        serverConnection.chat('', id, p[1]);
-        addToChatbox(serverConnection.id, null, id, serverConnection.username,
-                     new Date(), false, false, '', p[1]);
-    }
-};
 
 /**
    @param {string} c
@@ -4050,127 +3809,6 @@ commands['relay-test'] = {
     }
 }
 
-function handleInput() {
-    let input = /** @type {HTMLTextAreaElement} */
-        (document.getElementById('input'));
-    let data = input.value;
-    input.value = '';
-
-    let message, me;
-
-    if(data === '')
-        return;
-
-    if(data[0] === '/') {
-        if(data.length > 1 && data[1] === '/') {
-            message = data.slice(1);
-            me = false;
-        } else {
-            let cmd, rest;
-            let space = data.indexOf(' ');
-            if(space < 0) {
-                cmd = data.slice(1);
-                rest = '';
-            } else {
-                cmd = data.slice(1, space);
-                rest = data.slice(space + 1);
-            }
-
-            if(cmd === 'me') {
-                message = rest;
-                me = true;
-            } else {
-                let c = commands[cmd];
-                if(!c) {
-                    displayError(
-                        `Unknown command /${cmd}, type /help for help`
-                    );
-                    return;
-                }
-                if(c.predicate) {
-                    let s = c.predicate();
-                    if(s) {
-                        displayError(s);
-                        return;
-                    }
-                }
-                try {
-                    c.f(cmd, rest);
-                } catch(e) {
-                    console.error(e);
-                    displayError(e);
-                }
-                return;
-            }
-        }
-    } else {
-        message = data;
-        me = false;
-    }
-
-    if(!serverConnection || !serverConnection.socket) {
-        displayError("Not connected.");
-        return;
-    }
-
-    try {
-        serverConnection.chat(me ? 'me' : '', '', message);
-    } catch(e) {
-        console.error(e);
-        displayError(e);
-    }
-}
-
-document.getElementById('inputform').onsubmit = function(e) {
-    e.preventDefault();
-    handleInput();
-};
-
-document.getElementById('input').onkeypress = function(e) {
-    if(e.key === 'Enter' && !e.ctrlKey && !e.shiftKey && !e.metaKey) {
-        e.preventDefault();
-        handleInput();
-    }
-};
-
-function chatResizer(e) {
-    e.preventDefault();
-    let full_width = document.getElementById("mainrow").offsetWidth;
-    let left = document.getElementById("left");
-    let right = document.getElementById("right");
-
-    let start_x = e.clientX;
-    let start_width = left.offsetWidth;
-
-    function start_drag(e) {
-        let left_width = (start_width + e.clientX - start_x) * 100 / full_width;
-        // set min chat width to 300px
-        let min_left_width = 300 * 100 / full_width;
-        if (left_width < min_left_width) {
-          return;
-        }
-        left.style.flex = left_width.toString();
-        right.style.flex = (100 - left_width).toString();
-    }
-    function stop_drag(e) {
-        document.documentElement.removeEventListener(
-            'mousemove', start_drag, false,
-        );
-        document.documentElement.removeEventListener(
-            'mouseup', stop_drag, false,
-        );
-    }
-
-    document.documentElement.addEventListener(
-        'mousemove', start_drag, false,
-    );
-    document.documentElement.addEventListener(
-        'mouseup', stop_drag, false,
-    );
-}
-
-document.getElementById('resizer').addEventListener('mousedown', chatResizer, false);
-
 /**
  * @param {unknown} message
  * @param {string} [level]
@@ -4347,32 +3985,10 @@ document.getElementById('clodeside').onclick = function(e) {
     closeNav();
 };
 
-document.getElementById('collapse-video').onclick = function(e) {
-    e.preventDefault();
-    setVisibility('collapse-video', false);
-    setVisibility('show-video', true);
-    hideVideo(true);
-};
-
 document.getElementById('show-video').onclick = function(e) {
     e.preventDefault();
     setVisibility('video-container', true);
-    setVisibility('collapse-video', true);
     setVisibility('show-video', false);
-};
-
-document.getElementById('close-chat').onclick = function(e) {
-    e.preventDefault();
-    setVisibility('left', false);
-    setVisibility('show-chat', true);
-    resizePeers();
-};
-
-document.getElementById('show-chat').onclick = function(e) {
-    e.preventDefault();
-    setVisibility('left', true);
-    setVisibility('show-chat', false);
-    resizePeers();
 };
 
 async function serverConnect() {
@@ -4389,7 +4005,6 @@ async function serverConnect() {
     serverConnection.ondownstream = gotDownStream;
     serverConnection.onuser = gotUser;
     serverConnection.onjoined = gotJoined;
-    serverConnection.onchat = addToChatbox;
     serverConnection.onusermessage = gotUserMessage;
     serverConnection.onfiletransfer = gotFileTransfer;
 
