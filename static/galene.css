@@ -801,6 +801,11 @@ h1 {
     display: none;
 }
 
+.peer-role-video-hidden,
+.peer-video-muted {
+    display: none !important;
+}
+
 body.role-buddyDevice.unassigned #video-container {
     display: none !important;
 }

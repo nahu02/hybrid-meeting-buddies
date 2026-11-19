@@ -76,9 +76,10 @@ type webClient struct {
 	writerDone    chan struct{}
 	actions       *unbounded.Channel[any]
 
-	mu   sync.Mutex
-	down map[string]*rtpDownConnection
-	up   map[string]*rtpUpConnection
+	mu     sync.Mutex
+	down   map[string]*rtpDownConnection
+	up     map[string]*rtpUpConnection
+	dataMu sync.RWMutex
 }
 
 func (c *webClient) Group() *group.Group {
@@ -107,7 +108,15 @@ func (c *webClient) Permissions() []string {
 }
 
 func (c *webClient) Data() map[string]interface{} {
+	c.dataMu.RLock()
+	defer c.dataMu.RUnlock()
 	return maps.Clone(c.data)
+}
+
+func (c *webClient) replaceData(data map[string]interface{}) {
+	c.dataMu.Lock()
+	c.data = maps.Clone(data)
+	c.dataMu.Unlock()
 }
 
 func (c *webClient) PushClient(group, kind, id string, username string, perms []string, data map[string]interface{}) error {
@@ -149,13 +158,14 @@ type closeMessage struct {
 	data []byte
 }
 
-// setData merges input intp the clients data.
+// setData merges input into the client's data.
 // Must be called from c's goroutine
-func (c *webClient) setData(data map[string]interface{}) {
+func (c *webClient) setData(data map[string]interface{}, reroute bool) {
 	if c.group == nil {
 		return
 	}
 	g := c.Group()
+	c.dataMu.Lock()
 	if c.data == nil {
 		c.data = make(map[string]interface{})
 	}
@@ -166,6 +176,7 @@ func (c *webClient) setData(data map[string]interface{}) {
 			c.data[k] = v
 		}
 	}
+	c.dataMu.Unlock()
 	if value, changed := data["assignedTo"]; changed {
 		if value == nil {
 			clearResumePair(c)
@@ -190,7 +201,9 @@ func (c *webClient) setData(data map[string]interface{}) {
 		}
 	}(g.GetClients(nil))
 
-	rerouteGroup(g)
+	if reroute {
+		rerouteGroup(g)
+	}
 }
 
 func getUpConn(c *webClient, id string) *rtpUpConnection {
@@ -986,7 +999,9 @@ type kickAction struct {
 }
 
 type setDataAction struct {
-	data map[string]interface{}
+	data    map[string]interface{}
+	reroute bool
+	done    chan struct{}
 }
 
 var errEmptyId = group.ProtocolError("empty id")
@@ -1058,7 +1073,26 @@ func clientLoop(c *webClient, ws *websocket.Conn, versionError bool) error {
 			}
 		case <-c.actions.Ch:
 			actions := c.actions.Get()
+			type requestKey struct {
+				group  *group.Group
+				target string
+				id     string
+			}
+			seenRequests := make(map[requestKey]struct{})
 			for _, a := range actions {
+				if request, ok := a.(requestConnsAction); ok && request.target != nil {
+					key := requestKey{
+						group: request.group, target: request.target.Id(), id: request.id,
+					}
+					if _, seen := seenRequests[key]; seen {
+						continue
+					}
+					seenRequests[key] = struct{}{}
+				} else if _, ok := a.(setDataAction); ok {
+					// Requests after a local role/assignment change must still
+					// run against the new state.
+					clear(seenRequests)
+				}
 				err := handleAction(c, a)
 				if err != nil {
 					return err
@@ -1233,15 +1267,11 @@ func filterTracksByRoles(up conn.Up, c *webClient, requested []conn.UpTrack) ([]
 
 			// disregard audio feeds if the buddy's audioRoute == local
 			buddyOfUpClient := c.group.GetClient(upAssignedTo)
-			if buddyOfUpClient == nil {
-				return nil, fmt.Errorf("client %q has assignedTo=%q, but no such client in group %q",
-					upUserId, upAssignedTo, c.group.Name())
-			}
-
-			buddyOfUpClientAudioRoute, _ := buddyOfUpClient.Data()["audioRoute"].(string)
-
-			if buddyOfUpClientAudioRoute == "local" {
-				requested = filterTrackType(requested, upClientLabel, screenshare)
+			if buddyOfUpClient != nil {
+				buddyOfUpClientAudioRoute, _ := buddyOfUpClient.Data()["audioRoute"].(string)
+				if buddyOfUpClientAudioRoute == "local" {
+					requested = filterTrackType(requested, upClientLabel, screenshare)
+				}
 			}
 		}
 	}
@@ -1279,15 +1309,11 @@ func filterTracksByRoles(up conn.Up, c *webClient, requested []conn.UpTrack) ([]
 			requested = filterTrackType(requested, upClientLabel, audio|screenshare)
 
 			buddyClient := c.group.GetClient(downAssignedTo)
-			if buddyClient == nil {
-				return nil, fmt.Errorf("client %q has assignedTo=%q, but no such client in group %q",
-					c.Id(), downAssignedTo, c.group.Name())
-			}
-
-			buddyClientAudioRoute, _ := buddyClient.Data()["audioRoute"].(string)
-
-			if buddyClientAudioRoute == "local" {
-				requested = filterTrackType(requested, upClientLabel, screenshare)
+			if buddyClient != nil {
+				buddyClientAudioRoute, _ := buddyClient.Data()["audioRoute"].(string)
+				if buddyClientAudioRoute == "local" {
+					requested = filterTrackType(requested, upClientLabel, screenshare)
+				}
 			}
 		}
 	}
@@ -1496,7 +1522,10 @@ func handleAction(c *webClient, a any) error {
 			a.id, a.username, a.message,
 		}
 	case setDataAction:
-		c.setData(a.data)
+		c.setData(a.data, a.reroute)
+		if a.done != nil {
+			close(a.done)
+		}
 	default:
 		log.Printf("unexpected action %T", a)
 		return errors.New("unexpected action")
@@ -1549,7 +1578,10 @@ func leaveGroup(c *webClient) {
 			log.Printf("As client %q was leaving, its assigned buddy %q couldn't be found", c.Id(), assignedTo)
 		} else {
 			if wc, ok := buddy.(*webClient); ok {
-				wc.action(setDataAction{map[string]interface{}{"assignedTo": nil}})
+				wc.action(setDataAction{
+					data:    map[string]interface{}{"assignedTo": nil},
+					reroute: true,
+				})
 			}
 		}
 	}
@@ -1565,7 +1597,7 @@ func leaveGroup(c *webClient) {
 	rerouteGroup(c.group)
 
 	c.permissions = nil
-	c.data = nil
+	c.replaceData(nil)
 	c.requested = make(map[string][]string)
 	c.group = nil
 	c.resumeToken = ""
@@ -1657,22 +1689,24 @@ func handleClientMessage(c *webClient, m clientMessage) error {
 			resume, _ = takeResumeSession(resumeTicket, m.Group)
 		}
 		if resume != nil {
-			c.data = resume.data
-			if c.data == nil {
-				c.data = make(map[string]interface{})
+			data := maps.Clone(resume.data)
+			if data == nil {
+				data = make(map[string]interface{})
 			}
-			delete(c.data, "resumeTicket")
+			delete(data, "resumeTicket")
 			if resume.partnerId != "" {
-				c.data["assignedTo"] = resume.partnerId
+				data["assignedTo"] = resume.partnerId
 			}
+			c.replaceData(data)
 			trusted = true
 			trustedUsername = resume.username
 			trustedPermissions = resume.permissions
 		} else {
-			c.data = m.Data
-			if c.data != nil {
-				delete(c.data, "resumeTicket")
+			data := maps.Clone(m.Data)
+			if data != nil {
+				delete(data, "resumeTicket")
 			}
+			c.replaceData(data)
 		}
 		g, err := group.AddClient(m.Group, c,
 			group.ClientCredentials{
@@ -2239,7 +2273,7 @@ func handleClientMessage(c *webClient, m clientMessage) error {
 					"Bad value in setdata",
 				))
 			}
-			c.setData(data)
+			c.setData(data, true)
 		default:
 			return group.UserError("unknown user action")
 		}

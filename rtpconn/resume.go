@@ -198,10 +198,32 @@ func restoreResumePair(g *group.Group, c *webClient, previous *resumeSession) {
 		}
 	}
 	if partner == nil {
+		// Do not expose the old client id to role-based routing while the
+		// partner is still reconnecting. Keep partnerKey so their resume can
+		// restore the pair when they return.
+		c.dataMu.Lock()
+		delete(c.data, "assignedTo")
+		c.dataMu.Unlock()
+		saveResumeSession(c)
+		id, username := c.Id(), c.Username()
+		permissions, data := c.Permissions(), c.Data()
+		go func(clients []group.Client) {
+			for _, client := range clients {
+				client.PushClient(g.Name(), "change", id, username,
+					permissions, data)
+			}
+		}(g.GetClients(nil))
+		rerouteGroup(g)
 		return
 	}
-	c.action(setDataAction{data: map[string]interface{}{"assignedTo": partner.Id()}})
-	partner.action(setDataAction{data: map[string]interface{}{"assignedTo": c.Id()}})
+	c.action(setDataAction{
+		data:    map[string]interface{}{"assignedTo": partner.Id()},
+		reroute: true,
+	})
+	partner.action(setDataAction{
+		data:    map[string]interface{}{"assignedTo": c.Id()},
+		reroute: true,
+	})
 	updateResumePair(c, partner)
 }
 

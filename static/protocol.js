@@ -61,6 +61,50 @@ function newLocalId() {
     return id;
 }
 
+function refreshDownStreamUser(c) {
+    let sc = c.sc;
+    if(!sc || !c.source)
+        return;
+    recomputeUserStreams(sc, c.source);
+    if(sc.users[c.source] && sc.onuser)
+        sc.onuser.call(sc, c.source, 'change');
+}
+
+function scheduleIceRestart(sc, c) {
+    const state = c.pc.iceConnectionState;
+    if(state === 'connected' || state === 'completed') {
+        clearTimeout(c.userdata.iceRestartTimer);
+        c.userdata.iceRestartTimer = null;
+        return;
+    }
+    if(state !== 'failed' && state !== 'disconnected')
+        return;
+    if(state === 'disconnected' && c.userdata.iceRestartTimer)
+        return;
+
+    const restart = () => {
+        c.userdata.iceRestartTimer = null;
+        if(!c.sc || c.sc !== sc || !sc.socket ||
+           sc.socket.readyState !== WebSocket.OPEN ||
+           (c.pc.iceConnectionState !== 'failed' &&
+            c.pc.iceConnectionState !== 'disconnected'))
+            return;
+        try {
+            if(c.up)
+                c.restartIce();
+            else
+                sc.send({type: 'renegotiate', id: c.id});
+        } catch(e) {
+            console.warn('ICE restart failed', e);
+        }
+    };
+
+    if(state === 'failed')
+        restart();
+    else
+        c.userdata.iceRestartTimer = setTimeout(restart, 4000);
+}
+
 /**
  * @typedef {Object} user
  * @property {string} username
@@ -742,8 +786,7 @@ ServerConnection.prototype.newUpStream = function(localId) {
     pc.oniceconnectionstatechange = e => {
         if(c.onstatus)
             c.onstatus.call(c, pc.iceConnectionState);
-        if(pc.iceConnectionState === 'failed')
-            c.restartIce();
+        scheduleIceRestart(sc, c);
     };
 
     pc.ontrack = console.error;
@@ -888,12 +931,7 @@ ServerConnection.prototype.gotOffer = async function(id, label, source, username
         pc.oniceconnectionstatechange = e => {
             if(c.onstatus)
                 c.onstatus.call(c, pc.iceConnectionState);
-            if(pc.iceConnectionState === 'failed') {
-                sc.send({
-                    type: 'renegotiate',
-                    id: id,
-                });
-            }
+            scheduleIceRestart(sc, c);
         };
 
         c.pc.ontrack = function(e) {
@@ -902,14 +940,23 @@ ServerConnection.prototype.gotOffer = async function(id, label, source, username
                 return;
             }
             c.stream = e.streams[0];
-            let changed = recomputeUserStreams(sc, source);
+            if(!c.userdata.observedTracks)
+                c.userdata.observedTracks = new WeakSet();
+            if(!c.userdata.observedTracks.has(e.track)) {
+                c.userdata.observedTracks.add(e.track);
+                e.track.addEventListener('mute', () => refreshDownStreamUser(c));
+                e.track.addEventListener('unmute', () => refreshDownStreamUser(c));
+                e.track.addEventListener('ended', () => refreshDownStreamUser(c));
+            }
+            c.stream.onremovetrack = () => refreshDownStreamUser(c);
+            recomputeUserStreams(sc, source);
             if(c.ondowntrack) {
                 c.ondowntrack.call(
                     c, e.track, e.transceiver, e.streams[0],
                 );
             }
-            if(changed && sc.onuser)
-                sc.onuser.call(sc, source, "change");
+            if(sc.onuser)
+                sc.onuser.call(sc, source, 'change');
         };
     }
 
@@ -948,6 +995,7 @@ ServerConnection.prototype.gotOffer = async function(id, label, source, username
 
     c.localDescriptionSent = true;
     c.flushLocalIceCandidates();
+    refreshDownStreamUser(c);
     if(c.onnegotiationcompleted)
         c.onnegotiationcompleted.call(c);
 };
@@ -1249,6 +1297,8 @@ Stream.prototype.close = function(replace) {
         clearInterval(c.statsHandler);
         c.statsHandler = null;
     }
+    clearTimeout(c.userdata.iceRestartTimer);
+    c.userdata.iceRestartTimer = null;
 
     c.pc.close();
 
@@ -1313,6 +1363,8 @@ function recomputeUserStreams(sc, id) {
         if(!user.streams[c.label])
             user.streams[c.label] = {};
         c.stream.getTracks().forEach(t => {
+            if(t.readyState !== 'live' || t.muted)
+                return;
             user.streams[c.label][t.kind] = true;
         });
     }

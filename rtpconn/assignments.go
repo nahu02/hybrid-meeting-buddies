@@ -128,36 +128,43 @@ func validateBuddyPairs(pairs []BuddyPair, lookup lookupClient) error {
 	return nil
 }
 
-// assignBuddies replaces the assignment state of g.  Every client is
-// cleared first, so clients outside the pairs don't keep a stale
-// assignment.  pairs must already be validated (validateBuddyPairs).
+// assignBuddies applies the final assignment state once per client, then
+// reroutes the group after all client-local state has been updated. pairs
+// must already be validated (validateBuddyPairs).
 func assignBuddies(g *group.Group, pairs []BuddyPair) {
+	assignments := make(map[string]interface{})
+	for _, p := range pairs {
+		assignments[p.Remote] = p.BuddyDevice
+		assignments[p.BuddyDevice] = p.Remote
+	}
+	type pendingUpdate struct {
+		client *webClient
+		done   chan struct{}
+	}
+	pending := make([]pendingUpdate, 0)
 	for _, cc := range g.GetClients(nil) {
 		wc, ok := cc.(*webClient)
 		if !ok {
 			continue
 		}
-		// setData must run on the client's own goroutine; nil
-		// deletes the key.
-		wc.action(setDataAction{
-			data: map[string]interface{}{"assignedTo": nil},
-		})
-	}
-
-	apply := func(id, other string) {
-		wc, ok := g.GetClient(id).(*webClient)
-		if !ok {
-			// The client left between validation and now; its
-			// former buddy has already been cleared above, and
-			// leaveGroup unassigns in the other direction.
-			return
+		var assignedTo interface{}
+		if other, ok := assignments[wc.Id()]; ok {
+			assignedTo = other
 		}
+		done := make(chan struct{})
 		wc.action(setDataAction{
-			data: map[string]interface{}{"assignedTo": other},
+			data: map[string]interface{}{"assignedTo": assignedTo},
+			done: done,
 		})
+		pending = append(pending, pendingUpdate{client: wc, done: done})
 	}
-	for _, p := range pairs {
-		apply(p.Remote, p.BuddyDevice)
-		apply(p.BuddyDevice, p.Remote)
+	for _, update := range pending {
+		select {
+		case <-update.done:
+		case <-update.client.done:
+		}
 	}
+	// All clients now expose the final pairing state; reroute once instead
+	// of negotiating every intermediate clear/apply state.
+	rerouteGroup(g)
 }

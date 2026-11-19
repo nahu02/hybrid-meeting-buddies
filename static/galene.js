@@ -67,10 +67,15 @@ let queryData = {};
 const validRoles = ['remote', 'buddyDevice', 'leader'];
 
 function ownUserData() {
-    if(!serverConnection || !serverConnection.id)
-        return {};
+    if (!serverConnection || !serverConnection.id) return {};
     let user = serverConnection.users[serverConnection.id];
     return user && user.data ? user.data : {};
+}
+
+function refreshPeerLabels() {
+    if (!serverConnection) return;
+    for (let c of Object.values(serverConnection.up)) setLabel(c);
+    for (let c of Object.values(serverConnection.down)) setLabel(c);
 }
 
 function joinedRole() {
@@ -80,25 +85,25 @@ function joinedRole() {
 
 function updateRoleURL() {
     let params = new URLSearchParams();
-    for(let key in queryData) {
-        if(queryData[key] !== undefined && queryData[key] !== null)
+    for (let key in queryData) {
+        if (queryData[key] !== undefined && queryData[key] !== null)
             params.set(key, String(queryData[key]));
     }
     let query = params.toString();
-    history.replaceState(null, '', location.pathname +
-                         (query ? '?' + query : '') + location.hash);
+    history.replaceState(
+        null,
+        '',
+        location.pathname + (query ? '?' + query : '') + location.hash,
+    );
 }
 
 function setRole(role, updateUrl) {
-    if(!validRoles.includes(role))
-        role = 'remote';
+    if (!validRoles.includes(role)) role = 'remote';
     queryData.role = role;
-    updateSettings({role: role});
+    updateSettings({ role: role });
     let select = document.getElementById('roleselect');
-    if(select instanceof HTMLSelectElement)
-        select.value = role;
-    if(updateUrl)
-        updateRoleURL();
+    if (select instanceof HTMLSelectElement) select.value = role;
+    if (updateUrl) updateRoleURL();
 }
 
 function updateRoleClasses() {
@@ -107,43 +112,75 @@ function updateRoleClasses() {
     let body = document.body;
     // Only our own assignment hides the link: a new round's link
     // arrives before the old round's assignments are cleared.
-    if(data.assignedTo)
-        document.getElementById('assignment-toast')?.remove();
-    for(let r of validRoles)
-        body.classList.remove('role-' + r);
+    if (data.assignedTo) document.getElementById('assignment-toast')?.remove();
+    for (let r of validRoles) body.classList.remove('role-' + r);
     body.classList.remove('assigned', 'unassigned');
-    if(role)
-        body.classList.add('role-' + role);
-    if(role === 'remote' || role === 'buddyDevice')
+    if (role) body.classList.add('role-' + role);
+    if (role === 'remote' || role === 'buddyDevice')
         body.classList.add(data.assignedTo ? 'assigned' : 'unassigned');
-    return {role: role, data: data};
+    return { role: role, data: data };
+}
+
+function ensureBuddyVideoQuality(c) {
+    if (
+        !c ||
+        !c.userdata.buddyHighLayerNeeded ||
+        !c.userdata.negotiationCompleted ||
+        c.userdata.buddyHighLayerApplied
+    )
+        return;
+    c.userdata.buddyHighLayerApplied = true;
+    forceDownRate(c.id, true, false);
+    reconsiderDownRate(c.id);
 }
 
 function updateRoleView() {
-    let {role, data} = updateRoleClasses();
+    let { role, data } = updateRoleClasses();
     let assigned = !!data.assignedTo;
     let waiting = document.getElementById('buddy-waiting');
-    if(waiting)
-        waiting.classList.toggle('invisible',
-                                role !== 'buddyDevice' || assigned);
+    if (waiting)
+        waiting.classList.toggle(
+            'invisible',
+            role !== 'buddyDevice' || assigned,
+        );
 
     let peers = document.getElementById('peers');
-    for(let peer of Array.from(peers.children)) {
+    for (let peer of Array.from(peers.children)) {
         peer.classList.remove('peer-fullscreen');
         let localId = peer.id.replace(/^peer-/, '');
         // Stream maps are keyed by server stream id, while peer elements
         // are keyed by the client-local id (which can change on replace).
         let up = Object.values(serverConnection.up).find(
-            (c) => c.localId === localId
+            (c) => c.localId === localId,
         );
         let down = Object.values(serverConnection.down).find(
-            (c) => c.localId === localId
+            (c) => c.localId === localId,
         );
-        if(role === 'buddyDevice') {
+        let stream = down || up;
+        if (stream) setLabel(stream);
+        let sourceId = down ? down.source : serverConnection.id;
+        let sourceData = serverConnection.users[sourceId]?.data || {};
+        let videoActive = stream?.stream
+            ?.getVideoTracks()
+            .some((t) => t.readyState === 'live' && !t.muted);
+        let hideRoleCamera =
+            stream?.label === 'camera' &&
+            ((role === 'leader' &&
+                sourceData.role === 'remote' &&
+                !!sourceData.assignedTo) ||
+                (role === 'remote' &&
+                    !!data.assignedTo &&
+                    sourceData.role === 'leader'));
+        peer.classList.toggle('peer-role-video-hidden', hideRoleCamera);
+        peer.classList.toggle(
+            'peer-video-muted',
+            stream?.label === 'camera' && !videoActive,
+        );
+        if (role === 'buddyDevice') {
             // The buddy device has a single video surface: its assigned
             // remote. Never keep self previews, other peers, or hidden grid
             // cells in this view.
-            if(!assigned || up || !down || down.source !== data.assignedTo) {
+            if (!assigned || up || !down || down.source !== data.assignedTo) {
                 removePeerElement(peer);
                 continue;
             }
@@ -156,26 +193,27 @@ function updateRoleView() {
         }
     }
 
-    if(role === 'buddyDevice' && assigned) {
+    if (role === 'buddyDevice' && assigned) {
         // A video stream may have arrived while the role was still
         // unassigned. Render it now if its video track is live.
         let target = Object.values(serverConnection.down).find(
-            (c) => c.source === data.assignedTo &&
-                c.stream?.getVideoTracks().some((t) => t.readyState === 'live')
+            (c) =>
+                c.source === data.assignedTo &&
+                c.stream?.getVideoTracks().some((t) => t.readyState === 'live'),
         );
-        if(target && !document.getElementById('peer-' + target.localId))
+        if (target && !document.getElementById('peer-' + target.localId))
             setMedia(target, false, null);
-        let peer = target &&
-            document.getElementById('peer-' + target.localId);
-        if(peer) {
+        let peer = target && document.getElementById('peer-' + target.localId);
+        if (peer) {
             peer.classList.remove('peer-hidden');
             peer.classList.add('peer-fullscreen');
             let media = peer.querySelector('.media');
-            if(media)
-                media.classList.remove('invisible');
+            if (media) media.classList.remove('invisible');
+            target.userdata.buddyHighLayerNeeded = true;
+            ensureBuddyVideoQuality(target);
         }
     }
-    if(role === 'buddyDevice' && peers.childElementCount === 0)
+    if (role === 'buddyDevice' && peers.childElementCount === 0)
         hideVideo(true);
 
     setButtonsVisibility();
@@ -187,12 +225,15 @@ let joinedSuccessfully = false;
 
 function autoPresentForRole() {
     let role = joinedRole();
-    if((role !== 'leader' && role !== 'buddyDevice' && role !== 'remote') ||
-       autoPresentAttempted || !serverConnection ||
-       serverConnection.permissions.indexOf('present') < 0 ||
-       !('mediaDevices' in navigator) ||
-       !('getUserMedia' in navigator.mediaDevices) ||
-       findUpMedia('camera'))
+    if (
+        (role !== 'leader' && role !== 'buddyDevice' && role !== 'remote') ||
+        autoPresentAttempted ||
+        !serverConnection ||
+        serverConnection.permissions.indexOf('present') < 0 ||
+        !('mediaDevices' in navigator) ||
+        !('getUserMedia' in navigator.mediaDevices) ||
+        findUpMedia('camera')
+    )
         return;
     autoPresentAttempted = true;
     addLocalMedia();
@@ -205,6 +246,8 @@ function autoPresentForRole() {
  */
 let probingState = null;
 let resumeAttemptTicket = null;
+let resumeReconnectTimer = null;
+let resumeReconnectAttempt = 0;
 
 function resumeStorageKey() {
     return `galene-resume:${group}`;
@@ -213,7 +256,7 @@ function resumeStorageKey() {
 function getResumeTicket() {
     try {
         return sessionStorage.getItem(resumeStorageKey());
-    } catch(e) {
+    } catch (e) {
         return null;
     }
 }
@@ -221,9 +264,26 @@ function getResumeTicket() {
 function clearResumeTicket() {
     try {
         sessionStorage.removeItem(resumeStorageKey());
-    } catch(e) {
+    } catch (e) {
         // Session storage can be disabled; normal login remains available.
     }
+}
+
+function scheduleResumeReconnect() {
+    if (token || !getResumeTicket() || resumeReconnectTimer) return;
+    let delay = Math.min(500 * 2 ** resumeReconnectAttempt, 8000);
+    resumeReconnectTimer = setTimeout(async () => {
+        resumeReconnectTimer = null;
+        resumeReconnectAttempt++;
+        await serverConnect();
+        if (
+            (!serverConnection ||
+                !serverConnection.socket ||
+                serverConnection.socket.readyState === WebSocket.CLOSED) &&
+            getResumeTicket()
+        )
+            scheduleResumeReconnect();
+    }, delay);
 }
 
 /**
@@ -233,7 +293,7 @@ function clearResumeTicket() {
  */
 function getSelectElement(id) {
     let elt = document.getElementById(id);
-    if(!elt || !(elt instanceof HTMLSelectElement))
+    if (!elt || !(elt instanceof HTMLSelectElement))
         throw new Error(`Couldn't find ${id}`);
     return elt;
 }
@@ -245,7 +305,7 @@ function getSelectElement(id) {
  */
 function getInputElement(id) {
     let elt = document.getElementById(id);
-    if(!elt || !(elt instanceof HTMLInputElement))
+    if (!elt || !(elt instanceof HTMLInputElement))
         throw new Error(`Couldn't find ${id}`);
     return elt;
 }
@@ -257,7 +317,7 @@ function getInputElement(id) {
  */
 function getButtonElement(id) {
     let elt = document.getElementById(id);
-    if(!elt || !(elt instanceof HTMLButtonElement))
+    if (!elt || !(elt instanceof HTMLButtonElement))
         throw new Error(`Couldn't find ${id}`);
     return elt;
 }
@@ -272,96 +332,99 @@ function reflectSettings() {
     setLocalMute(settings.localMute);
 
     let videoselect = getSelectElement('videoselect');
-    if(!settings.hasOwnProperty('video') ||
-       !selectOptionAvailable(videoselect, settings.video)) {
+    if (
+        !settings.hasOwnProperty('video') ||
+        !selectOptionAvailable(videoselect, settings.video)
+    ) {
         settings.video = selectOptionDefault(videoselect);
         store = true;
     }
     videoselect.value = settings.video;
 
     let audioselect = getSelectElement('audioselect');
-    if(!settings.hasOwnProperty('audio') ||
-       !selectOptionAvailable(audioselect, settings.audio)) {
+    if (
+        !settings.hasOwnProperty('audio') ||
+        !selectOptionAvailable(audioselect, settings.audio)
+    ) {
         settings.audio = selectOptionDefault(audioselect);
         store = true;
     }
     audioselect.value = settings.audio;
 
-    if(settings.hasOwnProperty('filter')) {
+    if (settings.hasOwnProperty('filter')) {
         getSelectElement('filterselect').value = settings.filter;
     } else {
         let s = getSelectElement('filterselect').value;
-        if(s) {
+        if (s) {
             settings.filter = s;
             store = true;
         }
     }
 
-    if(settings.hasOwnProperty('request')) {
+    if (settings.hasOwnProperty('request')) {
         getSelectElement('requestselect').value = settings.request;
     } else {
         settings.request = getSelectElement('requestselect').value;
         store = true;
     }
 
-    if(settings.hasOwnProperty('send')) {
+    if (settings.hasOwnProperty('send')) {
         getSelectElement('sendselect').value = settings.send;
     } else {
         settings.send = getSelectElement('sendselect').value;
         store = true;
     }
 
-    if(settings.hasOwnProperty('simulcast')) {
-        getSelectElement('simulcastselect').value = settings.simulcast
+    if (settings.hasOwnProperty('simulcast')) {
+        getSelectElement('simulcastselect').value = settings.simulcast;
     } else {
         settings.simulcast = getSelectElement('simulcastselect').value;
         store = true;
     }
 
-    if(settings.hasOwnProperty('blackboardMode')) {
+    if (settings.hasOwnProperty('blackboardMode')) {
         getInputElement('blackboardbox').checked = settings.blackboardMode;
     } else {
         settings.blackboardMode = getInputElement('blackboardbox').checked;
         store = true;
     }
 
-    if(settings.hasOwnProperty('mirrorView')) {
+    if (settings.hasOwnProperty('mirrorView')) {
         getInputElement('mirrorbox').checked = settings.mirrorView;
     } else {
         settings.mirrorView = getInputElement('mirrorbox').checked;
         store = true;
     }
 
-    if(settings.hasOwnProperty('activityDetection')) {
+    if (settings.hasOwnProperty('activityDetection')) {
         getInputElement('activitybox').checked = settings.activityDetection;
     } else {
         settings.activityDetection = getInputElement('activitybox').checked;
         store = true;
     }
 
-    if(settings.hasOwnProperty('displayAll')) {
+    if (settings.hasOwnProperty('displayAll')) {
         getInputElement('displayallbox').checked = settings.displayAll;
     } else {
         settings.displayAll = getInputElement('displayallbox').checked;
         store = true;
     }
 
-    if(settings.hasOwnProperty('preprocessing')) {
+    if (settings.hasOwnProperty('preprocessing')) {
         getInputElement('preprocessingbox').checked = settings.preprocessing;
     } else {
         settings.preprocessing = getInputElement('preprocessingbox').checked;
         store = true;
     }
 
-    if(settings.hasOwnProperty('hqaudio')) {
+    if (settings.hasOwnProperty('hqaudio')) {
         getInputElement('hqaudiobox').checked = settings.hqaudio;
     } else {
         settings.hqaudio = getInputElement('hqaudiobox').checked;
         store = true;
     }
 
-    if(store)
-        storeSettings(settings);
+    if (store) storeSettings(settings);
 }
 
 /**
@@ -369,7 +432,7 @@ function reflectSettings() {
  * in sync with the CSS.
  */
 function isMobileLayout() {
-    return !!window.matchMedia('only screen and (max-width: 1024px)').matches
+    return !!window.matchMedia('only screen and (max-width: 1024px)').matches;
 }
 
 /**
@@ -380,8 +443,7 @@ function isMobileLayout() {
  */
 function hideVideo(force) {
     let mediadiv = document.getElementById('peers');
-    if(mediadiv.childElementCount > 0 && !force)
-        return;
+    if (mediadiv.childElementCount > 0 && !force) return;
     setVisibility('video-container', false);
     scheduleReconsiderDownRate();
 }
@@ -391,7 +453,7 @@ function hideVideo(force) {
  */
 function showVideo() {
     let hasmedia = document.getElementById('peers').childElementCount > 0;
-    if(isMobileLayout()) {
+    if (isMobileLayout()) {
         setVisibility('show-video', false);
     }
     setVisibility('video-container', hasmedia);
@@ -422,17 +484,18 @@ function isFirefox() {
 function setConnected(connected) {
     let userbox = document.getElementById('profile');
     let connectionbox = document.getElementById('login-container');
-    if(connected) {
-        let testCamera =  /** @type{HTMLDetailsElement} */
+    if (connected) {
+        let testCamera =
+            /** @type{HTMLDetailsElement} */
             (document.getElementById('test-camera'));
         // this causes the camera test to stop running
         testCamera.open = false;
         userbox.classList.remove('invisible');
         connectionbox.classList.add('invisible');
         displayUsername();
-        window.onresize = function(e) {
+        window.onresize = function (e) {
             scheduleReconsiderDownRate();
-        }
+        };
     } else {
         userbox.classList.add('invisible');
         connectionbox.classList.remove('invisible');
@@ -459,9 +522,9 @@ async function gotConnected() {
 function setChangePassword(username) {
     let s = document.getElementById('chpwspan');
     let a = s.children[0];
-    if(!(a instanceof HTMLAnchorElement))
+    if (!(a instanceof HTMLAnchorElement))
         throw new Error('Bad type for chpwspan');
-    if(username) {
+    if (username) {
         a.href = `/change-password.html?group=${encodeURIComponent(group)}&username=${encodeURIComponent(username)}`;
         a.target = '_blank';
         s.classList.remove('invisible');
@@ -479,42 +542,42 @@ async function join() {
     let credentials;
     let savedResumeTicket = token ? null : getResumeTicket();
     resumeAttemptTicket = savedResumeTicket;
-    if(savedResumeTicket) {
+    if (savedResumeTicket) {
         username = null;
         credentials = '';
-    } else if(token) {
+    } else if (token) {
         pwAuth = false;
         credentials = {
             type: 'token',
             token: token,
         };
-        switch(probingState) {
-        case null:
-            // when logging in with a token, we need to give the user
-            // a chance to interact with the page in order to enable
-            // autoplay.  Probe the group first in order to determine if
-            // we need a username.  We should really extend the protocol
-            // to have a simpler protocol for probing.
-            probingState = 'probing';
-            username = null;
-            break;
-        case 'need-username':
-        case 'success':
-            probingState = null;
-            break
-        default:
-            console.warn(`Unexpected probing state ${probingState}`);
-            probingState = null;
-            break;
+        switch (probingState) {
+            case null:
+                // when logging in with a token, we need to give the user
+                // a chance to interact with the page in order to enable
+                // autoplay.  Probe the group first in order to determine if
+                // we need a username.  We should really extend the protocol
+                // to have a simpler protocol for probing.
+                probingState = 'probing';
+                username = null;
+                break;
+            case 'need-username':
+            case 'success':
+                probingState = null;
+                break;
+            default:
+                console.warn(`Unexpected probing state ${probingState}`);
+                probingState = null;
+                break;
         }
     } else {
-        if(probingState !== null) {
+        if (probingState !== null) {
             console.warn(`Unexpected probing state ${probingState}`);
             probingState = null;
         }
         let pw = getInputElement('password').value;
         getInputElement('password').value = '';
-        if(!groupStatus.authServer) {
+        if (!groupStatus.authServer) {
             pwAuth = true;
             credentials = pw;
         } else {
@@ -530,10 +593,9 @@ async function join() {
 
     try {
         let data = Object.assign({}, queryData);
-        if(savedResumeTicket)
-            data.resumeTicket = savedResumeTicket;
+        if (savedResumeTicket) data.resumeTicket = savedResumeTicket;
         await serverConnection.join(group, username, credentials, data);
-    } catch(e) {
+    } catch (e) {
         console.error(e);
         displayError(e);
         serverConnection.close();
@@ -544,13 +606,11 @@ async function join() {
  * @this {ServerConnection}
  */
 function onPeerConnection() {
-    if(!getSettings().forceRelay)
-        return null;
+    if (!getSettings().forceRelay) return null;
     let old = this.rtcConfiguration;
     /** @type {RTCConfiguration} */
     let conf = {};
-    for(let key in old)
-        conf[key] = old[key];
+    for (let key in old) conf[key] = old[key];
     conf.iceTransportPolicy = 'relay';
     return conf;
 }
@@ -564,11 +624,16 @@ function gotClose(code, reason) {
     closeUpMedia();
     closeSafariStream();
     setConnected(false);
-    if(code !== 1000) {
+    if (code !== 1000) {
         console.warn('Socket close', code, reason);
     }
+    if (getResumeTicket() && !token) {
+        document.getElementById('login-container')?.classList.add('invisible');
+        displayMessage('Connection lost. Reconnecting to the meeting…');
+        scheduleResumeReconnect();
+    }
     let form = document.getElementById('loginform');
-    if(!(form instanceof HTMLFormElement))
+    if (!(form instanceof HTMLFormElement))
         throw new Error('Bad type for loginform');
 }
 
@@ -577,25 +642,26 @@ function gotClose(code, reason) {
  * @param {Stream} c
  */
 function gotDownStream(c) {
-    c.onclose = function(replace) {
-        if(!replace)
-            delMedia(c.localId);
+    c.onclose = function (replace) {
+        if (!replace) delMedia(c.localId);
     };
-    c.onerror = function(e) {
+    c.onerror = function (e) {
         console.error(e);
         displayError(e);
     };
-    c.ondowntrack = function(track, transceiver, stream) {
+    c.ondowntrack = function (track, transceiver, stream) {
         setMedia(c);
     };
-    c.onnegotiationcompleted = function() {
+    c.onnegotiationcompleted = function () {
         resetMedia(c);
-    }
-    c.onstatus = function(status) {
+        c.userdata.negotiationCompleted = true;
+        ensureBuddyVideoQuality(c);
+    };
+    c.onstatus = function (status) {
         setMediaStatus(c);
     };
     c.onstats = gotDownStats;
-    if(getSettings().activityDetection)
+    if (getSettings().activityDetection)
         c.setStatsInterval(activityDetectionInterval);
 
     setMedia(c);
@@ -604,35 +670,57 @@ function gotDownStream(c) {
 // Store current browser viewport height in css variable
 function setViewportHeight() {
     document.documentElement.style.setProperty(
-        '--vh', `${window.innerHeight/100}px`,
+        '--vh',
+        `${window.innerHeight / 100}px`,
     );
     showVideo();
     // Ajust video component size
     resizePeers();
 }
 
+document.addEventListener('visibilitychange', () => {
+    if (document.hidden) return;
+    let socket = serverConnection && serverConnection.socket;
+    if (!socket || socket.readyState === WebSocket.CLOSED) {
+        if (resumeReconnectTimer) {
+            clearTimeout(resumeReconnectTimer);
+            resumeReconnectTimer = null;
+        }
+        resumeReconnectAttempt = 0;
+        scheduleResumeReconnect();
+        return;
+    }
+    updateRoleView();
+    scheduleReconsiderDownRate();
+    Object.values(serverConnection.up).forEach((c) =>
+        scheduleIceRestart(serverConnection, c),
+    );
+    Object.values(serverConnection.down).forEach((c) =>
+        scheduleIceRestart(serverConnection, c),
+    );
+});
+
 // On resize and orientation change, we update viewport height
 addEventListener('resize', setViewportHeight);
 addEventListener('orientationchange', setViewportHeight);
 
-getButtonElement('presentbutton').onclick = async function(e) {
+getButtonElement('presentbutton').onclick = async function (e) {
     e.preventDefault();
     let button = this;
-    if(!(button instanceof HTMLButtonElement))
+    if (!(button instanceof HTMLButtonElement))
         throw new Error('Unexpected type for this.');
     // there's a potential race condition here: the user might click the
     // button a second time before the stream is set up and the button hidden.
     button.disabled = true;
     try {
         let id = findUpMedia('camera');
-        if(!id)
-            await addLocalMedia();
+        if (!id) await addLocalMedia();
     } finally {
         button.disabled = false;
     }
 };
 
-getButtonElement('startassignmentsbutton').onclick = async function(e) {
+getButtonElement('startassignmentsbutton').onclick = async function (e) {
     e.preventDefault();
     // Handled by the assignment service behind Galene's /assignment/
     // proxy.  Pressing again starts a new round that replaces the old one.
@@ -641,30 +729,30 @@ getButtonElement('startassignmentsbutton').onclick = async function(e) {
     try {
         let r = await fetch('/assignment/api/rounds', {
             method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({group: group}),
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ group: group }),
         });
-        if(!r.ok)
-            throw new Error(`${r.status} ${await r.text()}`);
-    } catch(err) {
+        if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
+    } catch (err) {
         displayError(`Couldn't start assignments: ${err.message}`);
     } finally {
         button.disabled = false;
     }
 };
 
-getSelectElement('roleselect').onchange = function(e) {
+getSelectElement('roleselect').onchange = function (e) {
     e.preventDefault();
-    if(!(this instanceof HTMLSelectElement))
+    if (!(this instanceof HTMLSelectElement))
         throw new Error('Unexpected type for this');
     setRole(this.value, true);
 };
 
 let audioRouteToastTimer = null;
+let knownAudioRoutes = new Map();
 
 function showAudioRouteToast(message) {
     let toast = document.getElementById('audio-route-toast');
-    if(!toast) {
+    if (!toast) {
         toast = document.createElement('div');
         toast.id = 'audio-route-toast';
         toast.className = 'audio-route-toast';
@@ -673,42 +761,59 @@ function showAudioRouteToast(message) {
         document.body.appendChild(toast);
     }
     toast.textContent = message;
-    if(audioRouteToastTimer)
-        clearTimeout(audioRouteToastTimer);
+    if (audioRouteToastTimer) clearTimeout(audioRouteToastTimer);
     audioRouteToastTimer = setTimeout(() => {
         toast.remove();
         audioRouteToastTimer = null;
     }, 5000);
 }
 
-getButtonElement('audioroutebutton').onclick = function(e) {
+function audioRouteFor(user) {
+    return user?.data?.audioRoute === 'local' ? 'local' : 'leader';
+}
+
+function notifyLeaderOfAudioRoute(id, user) {
+    if (joinedRole() !== 'leader' || user?.data?.role !== 'buddyDevice') return;
+    let remote =
+        user.data.assignedTo && serverConnection.users[user.data.assignedTo];
+    let remoteName = remote?.username || 'your buddy';
+    if (audioRouteFor(user) === 'leader') {
+        showAudioRouteToast(
+            `Passing ${remoteName}'s audio through your device`,
+        );
+    } else {
+        let buddyName = user.username || 'buddy';
+        showAudioRouteToast(
+            `Passing ${remoteName};s audio through ${buddyName} device`,
+        );
+    }
+}
+
+getButtonElement('audioroutebutton').onclick = function (e) {
     e.preventDefault();
     let data = ownUserData();
     let audioRoute = data.audioRoute === 'local' ? 'leader' : 'local';
-    serverConnection.userAction('setdata', serverConnection.id,
-                                {audioRoute: audioRoute});
-    let assignedUser = data.assignedTo &&
-        serverConnection.users[data.assignedTo];
+    serverConnection.userAction('setdata', serverConnection.id, {
+        audioRoute: audioRoute,
+    });
+    let assignedUser =
+        data.assignedTo && serverConnection.users[data.assignedTo];
     let remoteName = assignedUser?.username || 'your buddy';
     let destination = audioRoute === 'leader' ? 'TV' : 'phone';
-    showAudioRouteToast(
-        `Passing ${remoteName} audio through ${destination}`
-    );
+    showAudioRouteToast(`Passing ${remoteName}'s audio through ${destination}`);
 };
 
-getButtonElement('flipcamerabutton').onclick = function(e) {
+getButtonElement('flipcamerabutton').onclick = function (e) {
     e.preventDefault();
     let settings = getSettings();
-    let facingMode = settings.facingMode === 'environment' ?
-        'user' : 'environment';
-    updateSettings({facingMode: facingMode});
-    if(findUpMedia('camera'))
-        replaceCameraStream();
-    else
-        addLocalMedia();
+    let facingMode =
+        settings.facingMode === 'environment' ? 'user' : 'environment';
+    updateSettings({ facingMode: facingMode });
+    if (findUpMedia('camera')) replaceCameraStream();
+    else addLocalMedia();
 };
 
-getButtonElement('unpresentbutton').onclick = function(e) {
+getButtonElement('unpresentbutton').onclick = function (e) {
     e.preventDefault();
     closeUpMedia('camera');
     resizePeers();
@@ -720,10 +825,8 @@ getButtonElement('unpresentbutton').onclick = function(e) {
  */
 function setVisibility(id, visible) {
     let elt = document.getElementById(id);
-    if(visible)
-        elt.classList.remove('invisible');
-    else
-        elt.classList.add('invisible');
+    if (visible) elt.classList.remove('invisible');
+    else elt.classList.add('invisible');
 }
 
 /**
@@ -743,13 +846,15 @@ function setButtonsVisibility() {
     let connected = serverConnection && serverConnection.socket;
     let permissions = serverConnection.permissions;
     let canWebrtc = !(typeof RTCPeerConnection === 'undefined');
-    let canPresent = canWebrtc &&
-        ('mediaDevices' in navigator) &&
-        ('getUserMedia' in navigator.mediaDevices) &&
+    let canPresent =
+        canWebrtc &&
+        'mediaDevices' in navigator &&
+        'getUserMedia' in navigator.mediaDevices &&
         permissions.indexOf('present') >= 0;
-    let canShare = canWebrtc &&
-        ('mediaDevices' in navigator) &&
-        ('getDisplayMedia' in navigator.mediaDevices) &&
+    let canShare =
+        canWebrtc &&
+        'mediaDevices' in navigator &&
+        'getDisplayMedia' in navigator.mediaDevices &&
         permissions.indexOf('present') >= 0;
     let local = !!findUpMedia('camera');
     let mediacount = document.getElementById('peers').childElementCount;
@@ -763,12 +868,18 @@ function setButtonsVisibility() {
 
     let role = joinedRole();
     let assigned = !!ownUserData().assignedTo;
-    setVisibility('startassignmentsbutton',
-                  !!connected && role === 'leader');
-    setVisibility('audioroutebutton',
-                  !!connected && role === 'buddyDevice' && assigned);
-    setVisibility('flipcamerabutton',
-                  !!connected && role === 'buddyDevice' && assigned);
+    let managedAudioRole = role === 'leader' || role === 'buddyDevice';
+    setVisibility('preprocessingform', !managedAudioRole);
+    setVisibility('hqaudioform', !managedAudioRole);
+    setVisibility('startassignmentsbutton', !!connected && role === 'leader');
+    setVisibility(
+        'audioroutebutton',
+        !!connected && role === 'buddyDevice' && assigned,
+    );
+    setVisibility(
+        'flipcamerabutton',
+        !!connected && role === 'buddyDevice' && assigned,
+    );
     let audioRoute = ownUserData().audioRoute === 'local' ? 'local' : 'leader';
     getButtonElement('audioroutebutton').textContent =
         audioRoute === 'local' ? 'Audio: phone' : 'Audio: TV';
@@ -779,7 +890,6 @@ function setButtonsVisibility() {
     setVisibility('mediaoptions', canPresent);
     setVisibility('sendform', canPresent);
     setVisibility('simulcastform', canPresent);
-
 }
 
 /**
@@ -791,8 +901,8 @@ function setButtonsVisibility() {
 function setLocalMute(mute, reflect) {
     muteLocalTracks(mute);
     let button = document.getElementById('mutebutton');
-    let icon = button.querySelector("span .fas");
-    if(mute){
+    let icon = button.querySelector('span .fas');
+    if (mute) {
         icon.classList.add('fa-microphone-slash');
         icon.classList.remove('fa-microphone');
         button.classList.add('muted');
@@ -801,87 +911,86 @@ function setLocalMute(mute, reflect) {
         icon.classList.add('fa-microphone');
         button.classList.remove('muted');
     }
-    if(reflect)
-        updateSettings({localMute: mute});
+    if (reflect) updateSettings({ localMute: mute });
 }
 
-getSelectElement('videoselect').onchange = function(e) {
+getSelectElement('videoselect').onchange = function (e) {
     e.preventDefault();
-    if(!(this instanceof HTMLSelectElement))
+    if (!(this instanceof HTMLSelectElement))
         throw new Error('Unexpected type for this');
-    updateSettings({video: this.value});
+    updateSettings({ video: this.value });
     delSetting('facingMode');
     replaceCameraStream();
 };
 
-getSelectElement('audioselect').onchange = function(e) {
+getSelectElement('audioselect').onchange = function (e) {
     e.preventDefault();
-    if(!(this instanceof HTMLSelectElement))
+    if (!(this instanceof HTMLSelectElement))
         throw new Error('Unexpected type for this');
-    updateSettings({audio: this.value});
+    updateSettings({ audio: this.value });
     replaceCameraStream();
 };
 
-getInputElement('mirrorbox').onchange = function(e) {
+getInputElement('mirrorbox').onchange = function (e) {
     e.preventDefault();
-    if(!(this instanceof HTMLInputElement))
+    if (!(this instanceof HTMLInputElement))
         throw new Error('Unexpected type for this');
-    updateSettings({mirrorView: this.checked});
+    updateSettings({ mirrorView: this.checked });
     // no need to reopen the camera
     replaceUpStreams('camera');
 };
 
-getInputElement('blackboardbox').onchange = function(e) {
+getInputElement('blackboardbox').onchange = function (e) {
     e.preventDefault();
-    if(!(this instanceof HTMLInputElement))
+    if (!(this instanceof HTMLInputElement))
         throw new Error('Unexpected type for this');
-    updateSettings({blackboardMode: this.checked});
+    updateSettings({ blackboardMode: this.checked });
     replaceCameraStream();
 };
 
-getInputElement('preprocessingbox').onchange = function(e) {
+getInputElement('preprocessingbox').onchange = function (e) {
     e.preventDefault();
-    if(!(this instanceof HTMLInputElement))
+    if (!(this instanceof HTMLInputElement))
         throw new Error('Unexpected type for this');
-    updateSettings({preprocessing: this.checked});
+    updateSettings({ preprocessing: this.checked });
     replaceCameraStream();
 };
 
-getInputElement('hqaudiobox').onchange = function(e) {
+getInputElement('hqaudiobox').onchange = function (e) {
     e.preventDefault();
-    if(!(this instanceof HTMLInputElement))
+    if (!(this instanceof HTMLInputElement))
         throw new Error('Unexpected type for this');
-    updateSettings({hqaudio: this.checked});
+    updateSettings({ hqaudio: this.checked });
     replaceCameraStream();
 };
 
-document.getElementById('mutebutton').onclick = function(e) {
+document.getElementById('mutebutton').onclick = function (e) {
     e.preventDefault();
     let localMute = getSettings().localMute;
     if (localMute && !findUpMedia('camera')) {
-        displayMessage('Please use Enable to enable your camera or microphone.');
+        displayMessage(
+            'Please use Enable to enable your camera or microphone.',
+        );
     } else {
         localMute = !localMute;
         setLocalMute(localMute, true);
     }
 };
 
-document.getElementById('sharebutton').onclick = function(e) {
+document.getElementById('sharebutton').onclick = function (e) {
     e.preventDefault();
     addShareMedia();
 };
 
-getSelectElement('filterselect').onchange = async function(e) {
-    if(!(this instanceof HTMLSelectElement))
+getSelectElement('filterselect').onchange = async function (e) {
+    if (!(this instanceof HTMLSelectElement))
         throw new Error('Unexpected type for this');
-    updateSettings({filter: this.value});
+    updateSettings({ filter: this.value });
     let c = findUpMedia('camera');
-    if(c) {
+    if (c) {
         let filter = (this.value && filters[this.value]) || null;
-        if(filter)
-            c.userdata.filterDefinition = filter;
-        else
-            delete c.userdata.filterDefinition;
+        if (filter) c.userdata.filterDefinition = filter;
+        else delete c.userdata.filterDefinition;
         replaceUpStream(c);
     }
 };
@@ -893,32 +1002,32 @@ getSelectElement('filterselect').onchange = async function(e) {
  */
 function getMaxVideoThroughput() {
     let v = getSettings().send;
-    switch(v) {
-    case 'lowest':
-        return 150000;
-    case 'low':
-        return 300000;
-    case 'normal':
-        return 700000;
-    case 'unlimited':
-        return null;
-    default:
-        console.error('Unknown video quality', v);
-        return 700000;
+    switch (v) {
+        case 'lowest':
+            return 150000;
+        case 'low':
+            return 300000;
+        case 'normal':
+            return 700000;
+        case 'unlimited':
+            return null;
+        default:
+            console.error('Unknown video quality', v);
+            return 700000;
     }
 }
 
-getSelectElement('sendselect').onchange = async function(e) {
-    if(!(this instanceof HTMLSelectElement))
+getSelectElement('sendselect').onchange = async function (e) {
+    if (!(this instanceof HTMLSelectElement))
         throw new Error('Unexpected type for this');
-    updateSettings({send: this.value});
+    updateSettings({ send: this.value });
     await reconsiderSendParameters();
 };
 
-getSelectElement('simulcastselect').onchange = async function(e) {
-    if(!(this instanceof HTMLSelectElement))
+getSelectElement('simulcastselect').onchange = async function (e) {
+    if (!(this instanceof HTMLSelectElement))
         throw new Error('Unexpected type for this');
-    updateSettings({simulcast: this.value});
+    updateSettings({ simulcast: this.value });
     await reconsiderSendParameters();
 };
 
@@ -930,19 +1039,19 @@ getSelectElement('simulcastselect').onchange = async function(e) {
  */
 
 function mapRequest(what) {
-    switch(what) {
-    case '':
-        return {'': []};
-    case 'audio':
-        return {'': ['audio']};
-    case 'screenshare':
-        return {screenshare: ['audio','video'], '': ['audio']};
-    case 'everything-low':
-        return {'': ['audio','video-low']};
-    case 'everything':
-        return {'': ['audio','video']}
-    default:
-        throw new Error(`Unknown value ${what} in request`);
+    switch (what) {
+        case '':
+            return { '': [] };
+        case 'audio':
+            return { '': ['audio'] };
+        case 'screenshare':
+            return { screenshare: ['audio', 'video'], '': ['audio'] };
+        case 'everything-low':
+            return { '': ['audio', 'video-low'] };
+        case 'everything':
+            return { '': ['audio', 'video'] };
+        default:
+            throw new Error(`Unknown value ${what} in request`);
     }
 }
 
@@ -956,18 +1065,15 @@ function mapRequest(what) {
 
 function mapRequestLabel(what, label) {
     let r = mapRequest(what);
-    if(label in r)
-        return r[label];
-    else
-        return r[''];
+    if (label in r) return r[label];
+    else return r[''];
 }
 
-
-getSelectElement('requestselect').onchange = function(e) {
+getSelectElement('requestselect').onchange = function (e) {
     e.preventDefault();
-    if(!(this instanceof HTMLSelectElement))
+    if (!(this instanceof HTMLSelectElement))
         throw new Error('Unexpected type for this');
-    updateSettings({request: this.value});
+    updateSettings({ request: this.value });
     serverConnection.request(mapRequest(this.value));
     reconsiderDownRate();
 };
@@ -976,14 +1082,13 @@ const activityDetectionInterval = 200;
 const activityDetectionPeriod = 700;
 const activityDetectionThreshold = 0.2;
 
-getInputElement('activitybox').onchange = function(e) {
-    if(!(this instanceof HTMLInputElement))
+getInputElement('activitybox').onchange = function (e) {
+    if (!(this instanceof HTMLInputElement))
         throw new Error('Unexpected type for this');
-    updateSettings({activityDetection: this.checked});
-    for(let id in serverConnection.down) {
+    updateSettings({ activityDetection: this.checked });
+    for (let id in serverConnection.down) {
         let c = serverConnection.down[id];
-        if(this.checked)
-            c.setStatsInterval(activityDetectionInterval);
+        if (this.checked) c.setStatsInterval(activityDetectionInterval);
         else {
             c.setStatsInterval(0);
             setActive(c, false);
@@ -991,17 +1096,16 @@ getInputElement('activitybox').onchange = function(e) {
     }
 };
 
-getInputElement('displayallbox').onchange = function(e) {
-    if(!(this instanceof HTMLInputElement))
+getInputElement('displayallbox').onchange = function (e) {
+    if (!(this instanceof HTMLInputElement))
         throw new Error('Unexpected type for this');
-    updateSettings({displayAll: this.checked});
-    for(let id in serverConnection.down) {
+    updateSettings({ displayAll: this.checked });
+    for (let id in serverConnection.down) {
         let c = serverConnection.down[id];
         let elt = document.getElementById('peer-' + c.localId);
         showHideMedia(c, elt);
     }
 };
-
 
 /**
  * @this {Stream}
@@ -1012,22 +1116,25 @@ function gotUpStats(stats) {
 
     let values = [];
 
-    for(let id in stats) {
-        if(stats[id] && stats[id]['outbound-rtp']) {
+    for (let id in stats) {
+        if (stats[id] && stats[id]['outbound-rtp']) {
             let rate = stats[id]['outbound-rtp'].rate;
-            if(typeof rate === 'number') {
+            if (typeof rate === 'number') {
                 values.push(rate);
             }
         }
     }
 
-    if(values.length === 0) {
+    if (values.length === 0) {
         setLabel(c, '');
     } else {
-        values.sort((x,y) => x - y);
-        setLabel(c, values
-                 .map(x => Math.round(x / 1000).toString())
-                 .reduce((x, y) => x + '+' + y));
+        values.sort((x, y) => x - y);
+        setLabel(
+            c,
+            values
+                .map((x) => Math.round(x / 1000).toString())
+                .reduce((x, y) => x + '+' + y),
+        );
     }
 }
 
@@ -1037,10 +1144,8 @@ function gotUpStats(stats) {
  */
 function setActive(c, value) {
     let peer = document.getElementById('peer-' + c.localId);
-    if(value)
-        peer.classList.add('peer-active');
-    else
-        peer.classList.remove('peer-active');
+    if (value) peer.classList.add('peer-active');
+    else peer.classList.remove('peer-active');
 }
 
 /**
@@ -1048,29 +1153,27 @@ function setActive(c, value) {
  * @param {Record<string,any>} stats
  */
 function gotDownStats(stats) {
-    if(!getInputElement('activitybox').checked)
-        return;
+    if (!getInputElement('activitybox').checked) return;
 
     let c = this;
 
     let maxEnergy = 0;
 
-    c.pc.getReceivers().forEach(r => {
+    c.pc.getReceivers().forEach((r) => {
         let tid = r.track && r.track.id;
         let s = tid && stats[tid];
         let energy = s && s['inbound-rtp'] && s['inbound-rtp'].audioEnergy;
-        if(typeof energy === 'number')
-            maxEnergy = Math.max(maxEnergy, energy);
+        if (typeof energy === 'number') maxEnergy = Math.max(maxEnergy, energy);
     });
 
     // totalAudioEnergy is defined as the integral of the square of the
     // volume, so square the threshold.
-    if(maxEnergy > activityDetectionThreshold * activityDetectionThreshold) {
+    if (maxEnergy > activityDetectionThreshold * activityDetectionThreshold) {
         c.userdata.lastVoiceActivity = Date.now();
         setActive(c, true);
     } else {
         let last = c.userdata.lastVoiceActivity;
-        if(!last || Date.now() - last > activityDetectionPeriod)
+        if (!last || Date.now() - last > activityDetectionPeriod)
             setActive(c, false);
     }
 }
@@ -1083,16 +1186,15 @@ function gotDownStats(stats) {
  * @param {string} [value]
  */
 function addSelectOption(select, label, value) {
-    if(!value)
-        value = label;
-    for(let i = 0; i < select.children.length; i++) {
+    if (!value) value = label;
+    for (let i = 0; i < select.children.length; i++) {
         let child = select.children[i];
-        if(!(child instanceof HTMLOptionElement)) {
+        if (!(child instanceof HTMLOptionElement)) {
             console.warn('Unexpected select child');
             continue;
         }
-        if(child.value === value) {
-            if(child.label !== label) {
+        if (child.value === value) {
+            if (child.label !== label) {
                 child.label = label;
             }
             return;
@@ -1113,14 +1215,13 @@ function addSelectOption(select, label, value) {
  */
 function selectOptionAvailable(select, value) {
     let children = select.children;
-    for(let i = 0; i < children.length; i++) {
+    for (let i = 0; i < children.length; i++) {
         let child = select.children[i];
-        if(!(child instanceof HTMLOptionElement)) {
+        if (!(child instanceof HTMLOptionElement)) {
             console.warn('Unexpected select child');
             continue;
         }
-        if(child.value === value)
-            return true;
+        if (child.value === value) return true;
     }
     return false;
 }
@@ -1131,24 +1232,23 @@ function selectOptionAvailable(select, value) {
  */
 function selectOptionDefault(select) {
     /* First non-empty option. */
-    for(let i = 0; i < select.children.length; i++) {
+    for (let i = 0; i < select.children.length; i++) {
         let child = select.children[i];
-        if(!(child instanceof HTMLOptionElement)) {
+        if (!(child instanceof HTMLOptionElement)) {
             console.warn('Unexpected select child');
             continue;
         }
-        if(child.value)
-            return child.value;
+        if (child.value) return child.value;
     }
     /* The empty option is always available. */
     return '';
 }
 
 /**
-  * True if we already went through setMediaChoices twice.
-  *
-  * @type {boolean}
-  */
+ * True if we already went through setMediaChoices twice.
+ *
+ * @type {boolean}
+ */
 let mediaChoicesDone = false;
 
 /**
@@ -1161,33 +1261,29 @@ let mediaChoicesDone = false;
  * @param{boolean} done
  */
 async function setMediaChoices(done) {
-    if(mediaChoicesDone)
-        return;
+    if (mediaChoicesDone) return;
 
     let devices = [];
     try {
-        if('mediaDevices' in navigator)
+        if ('mediaDevices' in navigator)
             devices = await navigator.mediaDevices.enumerateDevices();
-    } catch(e) {
+    } catch (e) {
         console.error(e);
         return;
     }
 
-    let cn = 1, mn = 1;
+    let cn = 1,
+        mn = 1;
 
-    devices.forEach(d => {
+    devices.forEach((d) => {
         let label = d.label;
-        if(d.kind === 'videoinput') {
-            if(!label)
-                label = `Camera ${cn}`;
-            addSelectOption(getSelectElement('videoselect'),
-                            label, d.deviceId);
+        if (d.kind === 'videoinput') {
+            if (!label) label = `Camera ${cn}`;
+            addSelectOption(getSelectElement('videoselect'), label, d.deviceId);
             cn++;
-        } else if(d.kind === 'audioinput') {
-            if(!label)
-                label = `Microphone ${mn}`;
-            addSelectOption(getSelectElement('audioselect'),
-                            label, d.deviceId);
+        } else if (d.kind === 'audioinput') {
+            if (!label) label = `Microphone ${mn}`;
+            addSelectOption(getSelectElement('audioselect'), label, d.deviceId);
             mn++;
         }
     });
@@ -1195,18 +1291,16 @@ async function setMediaChoices(done) {
     mediaChoicesDone = done;
 }
 
-
 /**
  * @param {string} [localId]
  */
 function newUpStream(localId) {
-    if(!serverConnection)
-        throw new Error("Not connected");
+    if (!serverConnection) throw new Error('Not connected');
     let c = serverConnection.newUpStream(localId);
-    c.onstatus = function(status) {
+    c.onstatus = function (status) {
         setMediaStatus(c);
     };
-    c.onerror = function(e) {
+    c.onerror = function (e) {
         console.error(e);
         displayError(e);
     };
@@ -1221,25 +1315,23 @@ function newUpStream(localId) {
  * @param {boolean} simulcast
  */
 async function setSendParameters(c, bps, simulcast) {
-    if(!c.up)
-        throw new Error('Setting throughput of down stream');
-    if(c.label === 'screenshare')
-        simulcast = false;
+    if (!c.up) throw new Error('Setting throughput of down stream');
+    if (c.label === 'screenshare') simulcast = false;
     let senders = c.pc.getSenders();
-    for(let i = 0; i < senders.length; i++) {
+    for (let i = 0; i < senders.length; i++) {
         let s = senders[i];
-        if(!s.track || s.track.kind !== 'video')
-            continue;
+        if (!s.track || s.track.kind !== 'video') continue;
         let p = s.getParameters();
-        if((!p.encodings ||
-            !simulcast && p.encodings.length !== 1) ||
-           (simulcast && p.encodings.length !== 2)) {
+        if (
+            !p.encodings ||
+            (!simulcast && p.encodings.length !== 1) ||
+            (simulcast && p.encodings.length !== 2)
+        ) {
             await replaceUpStream(c);
             return;
         }
-        p.encodings.forEach(e => {
-            if(!e.rid || e.rid === 'h')
-                e.maxBitrate = bps || unlimitedRate;
+        p.encodings.forEach((e) => {
+            if (!e.rid || e.rid === 'h') e.maxBitrate = bps || unlimitedRate;
         });
         await s.setParameters(p);
     }
@@ -1255,7 +1347,7 @@ async function reconsiderSendParameters() {
     let t = getMaxVideoThroughput();
     let s = doSimulcast();
     let promises = [];
-    for(let id in serverConnection.up) {
+    for (let id in serverConnection.up) {
         let c = serverConnection.up[id];
         promises.push(setSendParameters(c, t, s));
     }
@@ -1268,12 +1360,14 @@ async function reconsiderSendParameters() {
  */
 function scheduleReconsiderParameters() {
     cancelReconsiderParameters();
-    reconsiderParametersTimer =
-        setTimeout(reconsiderSendParameters, 10000 + Math.random() * 10000);
+    reconsiderParametersTimer = setTimeout(
+        reconsiderSendParameters,
+        10000 + Math.random() * 10000,
+    );
 }
 
 function cancelReconsiderParameters() {
-    if(reconsiderParametersTimer) {
+    if (reconsiderParametersTimer) {
         clearTimeout(reconsiderParametersTimer);
         reconsiderParametersTimer = null;
     }
@@ -1289,24 +1383,22 @@ const hqAudioRate = 128000;
  * @returns {boolean}
  */
 function doSimulcast() {
-    switch(getSettings().simulcast) {
-    case 'on':
-        return true;
-    case 'off':
-        return false;
-    default:
-        let count = 0;
-        for(let n in serverConnection.users) {
-            if(!serverConnection.users[n].permissions["system"]) {
-                count++;
-                if(count > 2)
-                    break;
-            }
-        }
-        if(count <= 2)
+    switch (getSettings().simulcast) {
+        case 'on':
+            return true;
+        case 'off':
             return false;
-        let bps = getMaxVideoThroughput();
-        return bps <= 0 || bps >= 2 * simulcastRate;
+        default:
+            let count = 0;
+            for (let n in serverConnection.users) {
+                if (!serverConnection.users[n].permissions['system']) {
+                    count++;
+                    if (count > 2) break;
+                }
+            }
+            if (count <= 2) return false;
+            let bps = getMaxVideoThroughput();
+            return bps <= 0 || bps >= 2 * simulcastRate;
     }
 }
 
@@ -1319,21 +1411,19 @@ function doSimulcast() {
  */
 
 async function setUpStream(c, stream) {
-    if(c.stream !== null)
-        throw new Error("Setting nonempty stream");
+    if (c.stream !== null) throw new Error('Setting nonempty stream');
 
     c.setStream(stream);
 
     // set up the handler early, in case setFilter fails.
-    c.onclose = async replace => {
+    c.onclose = async (replace) => {
         await removeFilter(c);
-        if(!replace) {
+        if (!replace) {
             stopStream(c.stream);
-            if(c.userdata.onclose)
-                c.userdata.onclose.call(c);
+            if (c.userdata.onclose) c.userdata.onclose.call(c);
             delMedia(c.localId);
         }
-    }
+    };
 
     await setFilter(c);
 
@@ -1342,17 +1432,16 @@ async function setUpStream(c, stream) {
      */
     function addUpTrack(t) {
         let settings = getSettings();
-        if(c.label === 'camera') {
-            if(t.kind === 'audio') {
-                if(settings.localMute)
-                    t.enabled = false;
-            } else if(t.kind === 'video') {
-                if(settings.blackboardMode) {
+        if (c.label === 'camera') {
+            if (t.kind === 'audio') {
+                if (settings.localMute) t.enabled = false;
+            } else if (t.kind === 'video') {
+                if (settings.blackboardMode) {
                     t.contentHint = 'detail';
                 }
             }
         }
-        t.onended = e => {
+        t.onended = (e) => {
             stream.onaddtrack = null;
             stream.onremovetrack = null;
             c.close();
@@ -1360,11 +1449,11 @@ async function setUpStream(c, stream) {
 
         let encodings = [];
         let simulcast = c.label !== 'screenshare' && doSimulcast();
-        if(t.kind === 'video') {
+        if (t.kind === 'video') {
             let bps = getMaxVideoThroughput();
             // Firefox doesn't like us setting the RID if we're not
             // simulcasting.
-            if(simulcast) {
+            if (simulcast) {
                 encodings.push({
                     rid: 'h',
                     maxBitrate: bps || unlimitedRate,
@@ -1380,7 +1469,9 @@ async function setUpStream(c, stream) {
                 });
             }
         } else {
-            if(settings.hqaudio) {
+            let managedAudioRole =
+                joinedRole() === 'leader' || joinedRole() === 'buddyDevice';
+            if (settings.hqaudio || managedAudioRole) {
                 encodings.push({
                     maxBitrate: hqAudioRate,
                 });
@@ -1396,42 +1487,39 @@ async function setUpStream(c, stream) {
         // requires this hack, which throws an exception on Chromium.
         try {
             let p = tr.sender.getParameters();
-            if(!p.encodings) {
+            if (!p.encodings) {
                 p.encodings = encodings;
                 tr.sender.setParameters(p);
             }
-        } catch(e) {
-        }
+        } catch (e) {}
     }
 
     // c.stream might be different from stream if there's a filter
     c.stream.getTracks().forEach(addUpTrack);
 
-    stream.onaddtrack = function(e) {
+    stream.onaddtrack = function (e) {
         addUpTrack(e.track);
     };
 
-    stream.onremovetrack = function(e) {
+    stream.onremovetrack = function (e) {
         let t = e.track;
 
         /** @type {RTCRtpSender} */
         let sender;
-        c.pc.getSenders().forEach(s => {
-            if(s.track === t)
-                sender = s;
+        c.pc.getSenders().forEach((s) => {
+            if (s.track === t) sender = s;
         });
-        if(sender) {
+        if (sender) {
             c.pc.removeTrack(sender);
         } else {
             console.warn('Removing unknown track');
         }
 
         let found = false;
-        c.pc.getSenders().forEach(s => {
-            if(s.track)
-                found = true;
+        c.pc.getSenders().forEach((s) => {
+            if (s.track) found = true;
         });
-        if(!found) {
+        if (!found) {
             stream.onaddtrack = null;
             stream.onremovetrack = null;
             c.close();
@@ -1453,15 +1541,15 @@ async function replaceUpStream(c) {
     await removeFilter(c);
     let cn = newUpStream(c.localId);
     cn.label = c.label;
-    if(c.userdata.filterDefinition)
+    if (c.userdata.filterDefinition)
         cn.userdata.filterDefinition = c.userdata.filterDefinition;
-    if(c.userdata.onclose)
-        cn.userdata.onclose = c.userdata.onclose;
-    let media = /** @type{HTMLVideoElement} */
+    if (c.userdata.onclose) cn.userdata.onclose = c.userdata.onclose;
+    let media =
+        /** @type{HTMLVideoElement} */
         (document.getElementById('media-' + c.localId));
     try {
         await setUpStream(cn, c.stream);
-    } catch(e) {
+    } catch (e) {
         console.error(e);
         displayError(e);
         cn.close();
@@ -1469,9 +1557,11 @@ async function replaceUpStream(c) {
         return null;
     }
 
-    await setMedia(cn,
-                   cn.label === 'camera' && shouldMirrorCamera(),
-                   cn.label === 'video' && media);
+    await setMedia(
+        cn,
+        cn.label === 'camera' && shouldMirrorCamera(),
+        cn.label === 'video' && media,
+    );
 
     return cn;
 }
@@ -1484,10 +1574,9 @@ async function replaceUpStream(c) {
  */
 async function replaceUpStreams(label) {
     let promises = [];
-    for(let id in serverConnection.up) {
+    for (let id in serverConnection.up) {
         let c = serverConnection.up[id];
-        if(label && c.label !== label)
-            continue
+        if (label && c.label !== label) continue;
         promises.push(replaceUpStream(c));
     }
     await Promise.all(promises);
@@ -1498,8 +1587,7 @@ async function replaceUpStreams(label) {
  */
 function replaceCameraStream() {
     let c = findUpMedia('camera');
-    if(c)
-        addLocalMedia(c.localId);
+    if (c) addLocalMedia(c.localId);
 }
 
 /**
@@ -1509,27 +1597,36 @@ async function addLocalMedia(localId) {
     let settings = getSettings();
 
     /** @type{boolean|MediaTrackConstraints} */
-    let audio = settings.audio ? {deviceId: settings.audio} : false;
+    let audio = settings.audio ? { deviceId: settings.audio } : false;
     /** @type{boolean|MediaTrackConstraints} */
-    let video = settings.facingMode ?
-        {facingMode: {ideal: settings.facingMode}} :
-        (settings.video ? {deviceId: settings.video} : false);
+    let video = settings.facingMode
+        ? { facingMode: { ideal: settings.facingMode } }
+        : settings.video
+          ? { deviceId: settings.video }
+          : false;
 
-    if(video) {
+    if (video) {
         let resolution = settings.resolution;
-        if(resolution) {
+        if (resolution) {
             video.width = { ideal: resolution[0] };
             video.height = { ideal: resolution[1] };
-        } else if(settings.blackboardMode) {
+        } else if (settings.blackboardMode) {
             video.width = { min: 640, ideal: 1920 };
             video.height = { min: 400, ideal: 1080 };
         } else {
-            video.aspectRatio = { ideal: 4/3 };
+            video.aspectRatio = { ideal: 4 / 3 };
         }
     }
 
-    if(audio) {
-        if(!settings.preprocessing) {
+    if (audio) {
+        let role = joinedRole();
+        if (role === 'leader' || role === 'buddyDevice') {
+            if (audio === true) audio = {};
+            audio.echoCancellation = true;
+            audio.noiseSuppression = true;
+            audio.autoGainControl = true;
+            if (role === 'leader') audio.channelCount = { ideal: 2 };
+        } else if (!settings.preprocessing) {
             audio.echoCancellation = false;
             audio.noiseSuppression = false;
             audio.autoGainControl = false;
@@ -1537,18 +1634,18 @@ async function addLocalMedia(localId) {
     }
 
     let old = serverConnection.findByLocalId(localId);
-    if(old) {
+    if (old) {
         // make sure that the camera is released before we try to reopen it
         await removeFilter(old);
         stopStream(old.stream);
     }
 
-    let constraints = {audio: audio, video: video};
+    let constraints = { audio: audio, video: video };
     /** @type {MediaStream} */
     let stream = null;
     try {
         stream = await navigator.mediaDevices.getUserMedia(constraints);
-    } catch(e) {
+    } catch (e) {
         displayError(e);
         return;
     }
@@ -1559,7 +1656,7 @@ async function addLocalMedia(localId) {
 
     try {
         c = newUpStream(localId);
-    } catch(e) {
+    } catch (e) {
         console.log(e);
         displayError(e);
         return;
@@ -1567,18 +1664,16 @@ async function addLocalMedia(localId) {
 
     c.label = 'camera';
 
-    if(video && settings.filter) {
+    if (video && settings.filter) {
         let filter = filters[settings.filter];
-        if(filter)
-            c.userdata.filterDefinition = filter;
-        else
-            displayWarning(`Unknown filter ${settings.filter}`);
+        if (filter) c.userdata.filterDefinition = filter;
+        else displayWarning(`Unknown filter ${settings.filter}`);
     }
 
     try {
         await setUpStream(c, stream);
         await setMedia(c, shouldMirrorCamera());
-    } catch(e) {
+    } catch (e) {
         console.error(e);
         displayError(e);
         c.close();
@@ -1587,7 +1682,7 @@ async function addLocalMedia(localId) {
 }
 
 function shouldMirrorCamera() {
-    if(joinedRole() === 'buddyDevice')
+    if (joinedRole() === 'buddyDevice')
         return getSettings().facingMode !== 'environment';
     return !!getSettings().mirrorView;
 }
@@ -1595,16 +1690,15 @@ function shouldMirrorCamera() {
 let safariScreenshareDone = false;
 
 async function addShareMedia() {
-    if(!safariScreenshareDone) {
-        if(isSafari()) {
+    if (!safariScreenshareDone) {
+        if (isSafari()) {
             let ok = confirm(
                 'Screen sharing in Safari is broken.  ' +
                     'It will work at first, ' +
                     'but then your video will randomly freeze.  ' +
-                    'Are you sure that you wish to enable screensharing?'
+                    'Are you sure that you wish to enable screensharing?',
             );
-            if(!ok)
-                return
+            if (!ok) return;
         }
         safariScreenshareDone = true;
     }
@@ -1612,13 +1706,13 @@ async function addShareMedia() {
     /** @type {MediaStream} */
     let stream = null;
     try {
-        if(!('getDisplayMedia' in navigator.mediaDevices))
+        if (!('getDisplayMedia' in navigator.mediaDevices))
             throw new Error('Your browser does not support screen sharing');
         stream = await navigator.mediaDevices.getDisplayMedia({
             video: true,
             audio: true,
         });
-    } catch(e) {
+    } catch (e) {
         console.error(e);
         displayError(e);
         return;
@@ -1641,11 +1735,10 @@ async function addFileMedia(file) {
     video.controls = true;
     let stream;
     /** @ts-ignore */
-    if(video.captureStream)
+    if (video.captureStream)
         /** @ts-ignore */
         stream = video.captureStream();
-    /** @ts-ignore */
-    else if(video.mozCaptureStream)
+    /** @ts-ignore */ else if (video.mozCaptureStream)
         /** @ts-ignore */
         stream = video.mozCaptureStream();
     else {
@@ -1655,10 +1748,11 @@ async function addFileMedia(file) {
 
     let c = newUpStream();
     c.label = 'video';
-    c.userdata.onclose = function() {
-        let media = /** @type{HTMLVideoElement} */
+    c.userdata.onclose = function () {
+        let media =
+            /** @type{HTMLVideoElement} */
             (document.getElementById('media-' + this.localId));
-        if(media && media.src) {
+        if (media && media.src) {
             URL.revokeObjectURL(media.src);
             media.src = null;
         }
@@ -1667,7 +1761,7 @@ async function addFileMedia(file) {
 
     let presenting = !!findUpMedia('camera');
     let muted = getSettings().localMute;
-    if(presenting && !muted) {
+    if (presenting && !muted) {
         setLocalMute(true, true);
         displayWarning('You have been muted');
     }
@@ -1681,10 +1775,10 @@ async function addFileMedia(file) {
  * @param {MediaStream} s
  */
 function stopStream(s) {
-    s.getTracks().forEach(t => {
+    s.getTracks().forEach((t) => {
         try {
             t.stop();
-        } catch(e) {
+        } catch (e) {
             console.warn(e);
         }
     });
@@ -1695,12 +1789,11 @@ function stopStream(s) {
  * is null, it closes all up connections.
  *
  * @param {string} [label]
-*/
+ */
 function closeUpMedia(label) {
-    for(let id in serverConnection.up) {
+    for (let id in serverConnection.up) {
         let c = serverConnection.up[id];
-        if(label && c.label !== label)
-            continue
+        if (label && c.label !== label) continue;
         c.close();
     }
 }
@@ -1710,12 +1803,10 @@ function closeUpMedia(label) {
  * @returns {Stream}
  */
 function findUpMedia(label) {
-    if(!serverConnection)
-        return null;
-    for(let id in serverConnection.up) {
+    if (!serverConnection) return null;
+    for (let id in serverConnection.up) {
         let c = serverConnection.up[id];
-        if(c.label === label)
-            return c;
+        if (c.label === label) return c;
     }
     return null;
 }
@@ -1724,14 +1815,13 @@ function findUpMedia(label) {
  * @param {boolean} mute
  */
 function muteLocalTracks(mute) {
-    if(!serverConnection)
-        return;
-    for(let id in serverConnection.up) {
+    if (!serverConnection) return;
+    for (let id in serverConnection.up) {
         let c = serverConnection.up[id];
-        if(c.label === 'camera') {
+        if (c.label === 'camera') {
             let stream = c.stream;
-            stream.getTracks().forEach(t => {
-                if(t.kind === 'audio') {
+            stream.getTracks().forEach((t) => {
+                if (t.kind === 'audio') {
                     t.enabled = !mute;
                 }
             });
@@ -1746,19 +1836,14 @@ function muteLocalTracks(mute) {
  */
 function forceDownRate(id, force, value) {
     let c = serverConnection.down[id];
-    if(!c)
+    if (!c) return;
+    if (joinedRole() === 'buddyDevice' && c.source !== ownUserData().assignedTo)
         return;
-    if(joinedRole() === 'buddyDevice' &&
-       c.source !== ownUserData().assignedTo)
-        return;
-    if('requested' in c.userdata) {
-        if(force)
-            c.userdata.requested.force = !!value;
-        else
-            delete(c.userdata.requested.force);
+    if ('requested' in c.userdata) {
+        if (force) c.userdata.requested.force = !!value;
+        else delete c.userdata.requested.force;
     } else {
-        if(force)
-            c.userdata.requested = {force: value};
+        if (force) c.userdata.requested = { force: value };
     }
     reconsiderDownRate(id);
 }
@@ -1772,16 +1857,15 @@ function forceDownRate(id, force, value) {
 function mapVideoToLow(requested) {
     let result = [];
     let found = false;
-    for(let i = 0; i < requested.length; i++) {
+    for (let i = 0; i < requested.length; i++) {
         let r = requested[i];
-        if(r === 'video') {
+        if (r === 'video') {
             r = 'video-low';
             found = true;
         }
         result.push(r);
     }
-    if(!found)
-        return null;
+    if (!found) return null;
     return result;
 }
 
@@ -1791,47 +1875,41 @@ function mapVideoToLow(requested) {
  * @param {string} [id] - the id of the track to reconsider, all if null.
  */
 function reconsiderDownRate(id) {
-    if(!serverConnection)
-        return;
-    if(!id) {
-        for(let id in serverConnection.down) {
+    if (!serverConnection) return;
+    if (!id) {
+        for (let id in serverConnection.down) {
             reconsiderDownRate(id);
         }
         return;
     }
     let c = serverConnection.down[id];
-    if(!c)
-        return;
-    if(joinedRole() === 'buddyDevice' &&
-       c.source !== ownUserData().assignedTo)
+    if (!c) return;
+    if (joinedRole() === 'buddyDevice' && c.source !== ownUserData().assignedTo)
         return;
     let normalrequest = mapRequestLabel(getSettings().request, c.label);
 
     let requestlow = mapVideoToLow(normalrequest);
-    if(requestlow === null)
-        return;
+    if (requestlow === null) return;
 
     let old = c.userdata.requested;
     let low = false;
-    if(old && ('force' in old)) {
+    if (old && 'force' in old) {
         low = old.force;
     } else {
-        let media = /** @type {HTMLVideoElement} */
+        let media =
+            /** @type {HTMLVideoElement} */
             (document.getElementById('media-' + c.localId));
-        if(!media)
-            return;
+        if (!media) return;
         let w = media.scrollWidth;
         let h = media.scrollHeight;
-        if(w && h && w * h <= 320 * 240) {
+        if (w && h && w * h <= 320 * 240) {
             low = true;
         }
     }
 
-    if(low !== !!(old && old.low)) {
-        if('requested' in c.userdata)
-            c.userdata.requested.low = low;
-        else
-            c.userdata.requested = {low: low};
+    if (low !== !!(old && old.low)) {
+        if ('requested' in c.userdata) c.userdata.requested.low = low;
+        else c.userdata.requested = { low: low };
         c.request(low ? requestlow : null);
     }
 }
@@ -1843,13 +1921,11 @@ let reconsiderDownRateTimer = null;
  * much recomputations when resizing the window.
  */
 function scheduleReconsiderDownRate() {
-    if(reconsiderDownRateTimer)
-        return;
-    reconsiderDownRateTimer =
-        setTimeout(() => {
-            reconsiderDownRateTimer = null;
-            reconsiderDownRate();
-        }, 200);
+    if (reconsiderDownRateTimer) return;
+    reconsiderDownRateTimer = setTimeout(() => {
+        reconsiderDownRateTimer = null;
+        reconsiderDownRate();
+    }, 200);
 }
 
 /**
@@ -1863,16 +1939,17 @@ function scheduleReconsiderDownRate() {
  *       controls will be created.
  */
 async function setMedia(c, mirror, video) {
-    if(joinedRole() === 'buddyDevice') {
+    if (joinedRole() === 'buddyDevice') {
         let assignedTo = ownUserData().assignedTo;
-        let videoReady = c.stream &&
+        let videoReady =
+            c.stream &&
             c.stream.getVideoTracks().some((t) => t.readyState === 'live');
-        if(!assignedTo || c.up || c.source !== assignedTo || !videoReady)
+        if (!assignedTo || c.up || c.source !== assignedTo || !videoReady)
             return;
     }
 
     let div = document.getElementById('peer-' + c.localId);
-    if(!div) {
+    if (!div) {
         div = document.createElement('div');
         div.id = 'peer-' + c.localId;
         div.classList.add('peer');
@@ -1880,24 +1957,27 @@ async function setMedia(c, mirror, video) {
         peersdiv.appendChild(div);
     }
 
-    showHideMedia(c, div)
-    if(joinedRole() === 'buddyDevice' &&
-       c.source === ownUserData().assignedTo && !c.up) {
+    showHideMedia(c, div);
+    if (
+        joinedRole() === 'buddyDevice' &&
+        c.source === ownUserData().assignedTo &&
+        !c.up
+    ) {
         // A paired remote's camera is the buddy-device UI, independent of
         // Galene's generic "display all peers" preference.
         div.classList.remove('peer-hidden');
         div.classList.add('peer-fullscreen');
     }
 
-    let media = /** @type {HTMLVideoElement} */
+    let media =
+        /** @type {HTMLVideoElement} */
         (document.getElementById('media-' + c.localId));
-    if(!media) {
-        if(video) {
+    if (!media) {
+        if (video) {
             media = video;
         } else {
             media = document.createElement('video');
-            if(c.up)
-                media.muted = true;
+            if (c.up) media.muted = true;
         }
 
         media.classList.add('media');
@@ -1908,23 +1988,26 @@ async function setMedia(c, mirror, video) {
         addCustomControls(media, div, c, !!video);
     }
 
-    if(mirror)
-        media.classList.add('mirror');
-    else
-        media.classList.remove('mirror');
+    if (mirror) media.classList.add('mirror');
+    else media.classList.remove('mirror');
 
-    if(!video && media.srcObject !== c.stream)
-        media.srcObject = c.stream;
-    media.onloadedmetadata = resizePeers;
+    if (!video && media.srcObject !== c.stream) media.srcObject = c.stream;
+    // Assignment data and the first decoded video frame can arrive in
+    // either order. Re-evaluate the label when this stream becomes usable.
+    media.onloadedmetadata = () => {
+        setLabel(c);
+        resizePeers();
+    };
+    media.onplaying = () => setLabel(c);
 
-    if(!c.up) {
-        media.onfullscreenchange = function(e) {
+    if (!c.up) {
+        media.onfullscreenchange = function (e) {
             forceDownRate(c.id, document.fullscreenElement === media, false);
-        }
+        };
     }
 
     let label = document.getElementById('label-' + c.localId);
-    if(!label) {
+    if (!label) {
         label = document.createElement('div');
         label.id = 'label-' + c.localId;
         label.classList.add('label');
@@ -1939,27 +2022,24 @@ async function setMedia(c, mirror, video) {
     resizePeers();
 }
 
-
 /**
  * @param {Stream} c
  * @param {HTMLElement} elt
  */
 function showHideMedia(c, elt) {
     let display = c.up || getSettings().displayAll;
-    if(!display && c.stream) {
+    if (!display && c.stream) {
         let tracks = c.stream.getTracks();
-        for(let i = 0; i < tracks.length; i++) {
+        for (let i = 0; i < tracks.length; i++) {
             let t = tracks[i];
-            if(t.kind === 'video') {
+            if (t.kind === 'video') {
                 display = true;
                 break;
             }
         }
     }
-    if(display)
-        elt.classList.remove('peer-hidden');
-    else
-        elt.classList.add('peer-hidden');
+    if (display) elt.classList.remove('peer-hidden');
+    else elt.classList.add('peer-hidden');
 }
 
 /**
@@ -1969,10 +2049,11 @@ function showHideMedia(c, elt) {
  * @param {Stream} c
  */
 function resetMedia(c) {
-    let media = /** @type {HTMLVideoElement} */
+    let media =
+        /** @type {HTMLVideoElement} */
         (document.getElementById('media-' + c.localId));
-    if(!media) {
-        console.error("Resetting unknown media element")
+    if (!media) {
+        console.error('Resetting unknown media element');
         return;
     }
     media.srcObject = media.srcObject;
@@ -1982,9 +2063,9 @@ function resetMedia(c) {
  * @param {Element} elt
  */
 function cloneHTMLElement(elt) {
-    if(!(elt instanceof HTMLElement))
+    if (!(elt instanceof HTMLElement))
         throw new Error('Unexpected element type');
-    return /** @type{HTMLElement} */(elt.cloneNode(true));
+    return /** @type{HTMLElement} */ (elt.cloneNode(true));
 }
 
 /**
@@ -1994,29 +2075,33 @@ function cloneHTMLElement(elt) {
  * @param {boolean} toponly
  */
 function addCustomControls(media, container, c, toponly) {
-    if(!toponly && !document.getElementById('controls-' + c.localId)) {
+    if (!toponly && !document.getElementById('controls-' + c.localId)) {
         media.controls = false;
 
-        let template =
-            document.getElementById('videocontrols-template').firstElementChild;
+        let template = document.getElementById(
+            'videocontrols-template',
+        ).firstElementChild;
         let controls = cloneHTMLElement(template);
         controls.id = 'controls-' + c.localId;
 
         let volume = getVideoButton(controls, 'volume');
 
-        if(c.up && c.label === 'camera') {
+        if (c.up && c.label === 'camera') {
             volume.remove();
         } else {
-            setVolumeButton(media.muted,
-                            getVideoButton(controls, "volume-mute"),
-                            getVideoButton(controls, "volume-slider"));
+            setVolumeButton(
+                media.muted,
+                getVideoButton(controls, 'volume-mute'),
+                getVideoButton(controls, 'volume-slider'),
+            );
         }
         container.appendChild(controls);
     }
 
-    if(c.up && !document.getElementById('topcontrols-' + c.localId)) {
-        let toptemplate =
-            document.getElementById('topvideocontrols-template').firstElementChild;
+    if (c.up && !document.getElementById('topcontrols-' + c.localId)) {
+        let toptemplate = document.getElementById(
+            'topvideocontrols-template',
+        ).firstElementChild;
         let topcontrols = cloneHTMLElement(toptemplate);
         topcontrols.id = 'topcontrols-' + c.localId;
         container.appendChild(topcontrols);
@@ -2029,7 +2114,9 @@ function addCustomControls(media, container, c, toponly) {
  * @param {string} name
  */
 function getVideoButton(container, name) {
-    return /** @type {HTMLElement} */(container.getElementsByClassName(name)[0]);
+    return /** @type {HTMLElement} */ (
+        container.getElementsByClassName(name)[0]
+    );
 }
 
 /**
@@ -2038,15 +2125,15 @@ function getVideoButton(container, name) {
  * @param {HTMLElement} slider
  */
 function setVolumeButton(muted, button, slider) {
-    if(!muted) {
-        button.classList.remove("fa-volume-mute");
-        button.classList.add("fa-volume-up");
+    if (!muted) {
+        button.classList.remove('fa-volume-mute');
+        button.classList.add('fa-volume-up');
     } else {
-        button.classList.remove("fa-volume-up");
-        button.classList.add("fa-volume-mute");
+        button.classList.remove('fa-volume-up');
+        button.classList.add('fa-volume-mute');
     }
 
-    if(!(slider instanceof HTMLInputElement))
+    if (!(slider instanceof HTMLInputElement))
         throw new Error("Couldn't find volume slider");
     slider.disabled = muted;
 }
@@ -2058,23 +2145,22 @@ function setVolumeButton(muted, button, slider) {
  */
 function registerControlHandlers(localId, media, container) {
     let play = getVideoButton(container, 'video-play');
-    if(play) {
-        play.onclick = function(event) {
+    if (play) {
+        play.onclick = function (event) {
             event.preventDefault();
             media.play();
         };
     }
 
     let stop = getVideoButton(container, 'video-stop');
-    if(stop) {
-        stop.onclick = function(event) {
+    if (stop) {
+        stop.onclick = function (event) {
             event.preventDefault();
             try {
                 let c = serverConnection.findByLocalId(localId);
-                if(!c)
-                    throw new Error('Closing unknown stream');
+                if (!c) throw new Error('Closing unknown stream');
                 c.close();
-            } catch(e) {
+            } catch (e) {
                 console.error(e);
                 displayError(e);
             }
@@ -2083,29 +2169,33 @@ function registerControlHandlers(localId, media, container) {
 
     let volume = getVideoButton(container, 'volume');
     if (volume) {
-        volume.onclick = function(event) {
-            let target = /** @type{HTMLElement} */(event.target);
-            if(!target.classList.contains('volume-mute'))
+        volume.onclick = function (event) {
+            let target = /** @type{HTMLElement} */ (event.target);
+            if (!target.classList.contains('volume-mute'))
                 // if click on volume slider, do nothing
                 return;
             event.preventDefault();
             media.muted = !media.muted;
-            setVolumeButton(media.muted, target,
-                            getVideoButton(volume, "volume-slider"));
+            setVolumeButton(
+                media.muted,
+                target,
+                getVideoButton(volume, 'volume-slider'),
+            );
         };
-        volume.oninput = function() {
-          let slider = /** @type{HTMLInputElement} */
-              (getVideoButton(volume, "volume-slider"));
-          media.volume = parseFloat(slider.value)/100;
+        volume.oninput = function () {
+            let slider =
+                /** @type{HTMLInputElement} */
+                (getVideoButton(volume, 'volume-slider'));
+            media.volume = parseFloat(slider.value) / 100;
         };
     }
 
     let pip = getVideoButton(container, 'pip');
-    if(pip) {
-        if(HTMLVideoElement.prototype.requestPictureInPicture) {
-            pip.onclick = function(e) {
+    if (pip) {
+        if (HTMLVideoElement.prototype.requestPictureInPicture) {
+            pip.onclick = function (e) {
                 e.preventDefault();
-                if(media.requestPictureInPicture) {
+                if (media.requestPictureInPicture) {
                     media.requestPictureInPicture();
                 } else {
                     displayWarning('Picture in Picture not supported.');
@@ -2117,16 +2207,18 @@ function registerControlHandlers(localId, media, container) {
     }
 
     let fs = getVideoButton(container, 'fullscreen');
-    if(fs) {
-        if(HTMLVideoElement.prototype.requestFullscreen ||
-           /** @ts-ignore */
-           HTMLVideoElement.prototype.webkitRequestFullscreen) {
-            fs.onclick = function(e) {
+    if (fs) {
+        if (
+            HTMLVideoElement.prototype.requestFullscreen ||
+            /** @ts-ignore */
+            HTMLVideoElement.prototype.webkitRequestFullscreen
+        ) {
+            fs.onclick = function (e) {
                 e.preventDefault();
-                if(media.requestFullscreen) {
+                if (media.requestFullscreen) {
                     media.requestFullscreen();
-                /** @ts-ignore */
-                } else if(media.webkitRequestFullscreen) {
+                    /** @ts-ignore */
+                } else if (media.webkitRequestFullscreen) {
                     /** @ts-ignore */
                     media.webkitRequestFullscreen();
                 } else {
@@ -2145,12 +2237,11 @@ function registerControlHandlers(localId, media, container) {
 function delMedia(localId) {
     let mediadiv = document.getElementById('peers');
     let peer = document.getElementById('peer-' + localId);
-    let media = /** @type{HTMLVideoElement} */
+    let media =
+        /** @type{HTMLVideoElement} */
         (document.getElementById('media-' + localId));
-    if(media)
-        media.srcObject = null;
-    if(peer && peer.parentElement === mediadiv)
-        mediadiv.removeChild(peer);
+    if (media) media.srcObject = null;
+    if (peer && peer.parentElement === mediadiv) mediadiv.removeChild(peer);
 
     setButtonsVisibility();
     updateRoleView();
@@ -2160,8 +2251,7 @@ function delMedia(localId) {
 
 function removePeerElement(peer) {
     let media = peer.querySelector('video');
-    if(media)
-        media.srcObject = null;
+    if (media) media.srcObject = null;
     peer.remove();
 }
 
@@ -2173,32 +2263,31 @@ function setMediaStatus(c) {
     let good = state === 'connected' || state === 'completed';
 
     let media = document.getElementById('media-' + c.localId);
-    if(!media) {
+    if (!media) {
         console.warn('Setting status of unknown media.');
         return;
     }
-    if(good) {
+    if (good) {
         media.classList.remove('media-failed');
-        if(c.userdata.play) {
-            if(media instanceof HTMLMediaElement)
-                media.play().catch(e => {
+        if (c.userdata.play) {
+            if (media instanceof HTMLMediaElement)
+                media.play().catch((e) => {
                     console.error(e);
                     displayError(e);
                 });
-            delete(c.userdata.play);
+            delete c.userdata.play;
         }
     } else {
         media.classList.add('media-failed');
     }
 
-    if(!c.up && state === 'failed') {
-        let from = c.username ?
-            `from user ${c.username}` :
-            'from anonymous user';
+    if (!c.up && state === 'failed') {
+        let from = c.username
+            ? `from user ${c.username}`
+            : 'from anonymous user';
         displayWarning(`Cannot receive media ${from}, still trying...`);
     }
 }
-
 
 /**
  * @param {Stream} c
@@ -2206,21 +2295,24 @@ function setMediaStatus(c) {
  */
 function setLabel(c, fallback) {
     let label = document.getElementById('label-' + c.localId);
-    if(!label)
-        return;
+    if (!label) return;
     let l = c.username;
     let role = joinedRole();
     let ownData = ownUserData();
-    if(c.up && (role === 'leader' || role === 'remote')) {
+    if (c.up && (role === 'leader' || role === 'remote')) {
         l = (serverConnection.username || l || 'You') + ' (you)';
-    } else if(!c.up && role === 'remote' && ownData.assignedTo &&
-              c.source === ownData.assignedTo) {
+    } else if (
+        !c.up &&
+        role === 'remote' &&
+        ownData.assignedTo &&
+        c.source === ownData.assignedTo
+    ) {
         l = (c.username || 'Buddy device') + ' (your buddy)';
     }
-    if(l) {
+    if (l) {
         label.textContent = l;
         label.classList.remove('label-fallback');
-    } else if(fallback) {
+    } else if (fallback) {
         label.textContent = fallback;
         label.classList.add('label-fallback');
     } else {
@@ -2231,14 +2323,13 @@ function setLabel(c, fallback) {
 
 function resizePeers() {
     // Window resize can call this method too early
-    if (!serverConnection)
-        return;
+    if (!serverConnection) return;
     let peers = document.getElementById('peers');
-    if(joinedRole() === 'buddyDevice') {
+    if (joinedRole() === 'buddyDevice') {
         peers.style['grid-template-columns'] = '1fr';
         peers.style['grid-template-rows'] = '1fr';
         let media = peers.querySelector('.peer-fullscreen .media');
-        if(media instanceof HTMLMediaElement)
+        if (media instanceof HTMLMediaElement)
             media.style.removeProperty('max-height');
         return;
     }
@@ -2246,42 +2337,45 @@ function resizePeers() {
         Object.keys(serverConnection.up).length +
         Object.keys(serverConnection.down).length;
     let landscapeVideos = Array.from(
-        peers.querySelectorAll('.peer:not(.peer-hidden) video.media')
+        peers.querySelectorAll('.peer:not(.peer-hidden) video.media'),
     );
-    let stackLandscapeVideos = isMobileLayout() && landscapeVideos.length > 1 &&
-        landscapeVideos.every((media) =>
-            media.videoWidth > 0 && media.videoHeight > 0 &&
-            media.videoWidth > media.videoHeight
+    let stackLandscapeVideos =
+        isMobileLayout() &&
+        landscapeVideos.length > 1 &&
+        landscapeVideos.every(
+            (media) =>
+                media.videoWidth > 0 &&
+                media.videoHeight > 0 &&
+                media.videoWidth > media.videoHeight,
         );
     let columns = stackLandscapeVideos ? 1 : Math.ceil(Math.sqrt(count));
     if (!count)
         // No video, nothing to resize.
         return;
-    let container = document.getElementById("video-container");
+    let container = document.getElementById('video-container');
     // Peers div has total padding of 40px, we remove 40 on offsetHeight
     // Grid has row-gap of 5px
     let rows = Math.ceil(count / columns);
     let margins = (rows - 1) * 5 + 40;
 
-    if(stackLandscapeVideos) {
-        peers.style['grid-template-columns'] = "repeat(1, minmax(0, 1fr))";
+    if (stackLandscapeVideos) {
+        peers.style['grid-template-columns'] = 'repeat(1, minmax(0, 1fr))';
     } else if (count <= 2 && container.offsetHeight > container.offsetWidth) {
-        peers.style['grid-template-columns'] = "repeat(1, 1fr)";
+        peers.style['grid-template-columns'] = 'repeat(1, 1fr)';
         rows = count;
     } else {
         peers.style['grid-template-columns'] = `repeat(${columns}, 1fr)`;
     }
-    if (count === 1)
-        return;
+    if (count === 1) return;
     let max_video_height = (peers.offsetHeight - margins) / rows;
-    let media_list = peers.querySelectorAll(".media");
-    for(let i = 0; i < media_list.length; i++) {
+    let media_list = peers.querySelectorAll('.media');
+    for (let i = 0; i < media_list.length; i++) {
         let media = media_list[i];
-        if(!(media instanceof HTMLMediaElement)) {
+        if (!(media instanceof HTMLMediaElement)) {
             console.warn('Unexpected media');
             continue;
         }
-        media.style['max-height'] = max_video_height + "px";
+        media.style['max-height'] = max_video_height + 'px';
     }
 }
 
@@ -2293,15 +2387,11 @@ function resizePeers() {
 function stringCompare(a, b) {
     let la = a.toLowerCase();
     let lb = b.toLowerCase();
-    if(la < lb)
-        return -1;
-    else if(la > lb)
-        return +1;
-    else if(a < b)
-        return -1;
-    else if(a > b)
-        return +1;
-    return 0
+    if (la < lb) return -1;
+    else if (la > lb) return +1;
+    else if (a < b) return -1;
+    else if (a > b) return +1;
+    return 0;
 }
 
 /**
@@ -2309,8 +2399,7 @@ function stringCompare(a, b) {
  */
 function dateFromInput(v) {
     let d = new Date(v);
-    if(d.toString() === 'Invalid Date')
-        throw new Error('Invalid date');
+    if (d.toString() === 'Invalid Date') throw new Error('Invalid date');
     return d;
 }
 
@@ -2324,15 +2413,18 @@ function dateToInput(d) {
 }
 
 function inviteMenu() {
-    let d = /** @type {HTMLDialogElement} */
+    let d =
+        /** @type {HTMLDialogElement} */
         (document.getElementById('invite-dialog'));
-    if(!('HTMLDialogElement' in window) || !d.showModal) {
+    if (!('HTMLDialogElement' in window) || !d.showModal) {
         displayError("This browser doesn't support modal dialogs");
         return;
     }
     d.returnValue = '';
     let c = getButtonElement('invite-cancel');
-    c.onclick = function(e) { d.close('cancel'); };
+    c.onclick = function (e) {
+        d.close('cancel');
+    };
     let u = getInputElement('invite-username');
     u.value = '';
     let now = new Date();
@@ -2348,41 +2440,37 @@ function inviteMenu() {
     d.showModal();
 }
 
-document.getElementById('invite-dialog').onclose = function(e) {
-    if(!(this instanceof HTMLDialogElement))
+document.getElementById('invite-dialog').onclose = function (e) {
+    if (!(this instanceof HTMLDialogElement))
         throw new Error('Unexpected type for this');
-    let dialog = /** @type {HTMLDialogElement} */(this);
-    if(dialog.returnValue !== 'invite')
-        return;
+    let dialog = /** @type {HTMLDialogElement} */ (this);
+    if (dialog.returnValue !== 'invite') return;
     let u = getInputElement('invite-username');
     let username = u.value.trim() || null;
     let nb = getInputElement('invite-not-before');
     let notBefore = null;
-    if(nb.value) {
+    if (nb.value) {
         try {
             notBefore = dateFromInput(nb.value);
-        } catch(e) {
+        } catch (e) {
             displayError(`Couldn't parse ${nb.value}: ${e.message}`);
             return;
         }
     }
     let ex = getInputElement('invite-expires');
     let expires = null;
-    if(ex.value) {
+    if (ex.value) {
         try {
             expires = dateFromInput(ex.value);
-        } catch(e) {
+        } catch (e) {
             displayError(`Couldn't parse ${ex.value}: ${e.message}`);
             return;
         }
     }
-    let template = {}
-    if(username)
-        template.username = username;
-    if(notBefore)
-        template['not-before'] = notBefore;
-    if(expires)
-        template.expires = expires;
+    let template = {};
+    if (username) template.username = username;
+    if (notBefore) template['not-before'] = notBefore;
+    if (expires) template.expires = expires;
     makeToken(template);
 };
 
@@ -2390,59 +2478,91 @@ document.getElementById('invite-dialog').onclose = function(e) {
  * @param {HTMLElement} elt
  */
 function userMenu(elt) {
-    if(!elt.id.startsWith('user-'))
+    if (!elt.id.startsWith('user-'))
         throw new Error('Unexpected id for user menu');
     let id = elt.id.slice('user-'.length);
     let user = serverConnection.users[id];
-    if(!user)
-        throw new Error("Couldn't find user")
+    if (!user) throw new Error("Couldn't find user");
     let items = [];
-    if(id === serverConnection.id) {
+    if (id === serverConnection.id) {
         let mydata = serverConnection.users[serverConnection.id].data;
-        if(mydata['raisehand'])
-            items.push({label: 'Unraise hand', onClick: () => {
-                serverConnection.userAction(
-                    'setdata', serverConnection.id, {'raisehand': null},
-                );
-            }});
+        if (mydata['raisehand'])
+            items.push({
+                label: 'Unraise hand',
+                onClick: () => {
+                    serverConnection.userAction(
+                        'setdata',
+                        serverConnection.id,
+                        { raisehand: null },
+                    );
+                },
+            });
         else
-            items.push({label: 'Raise hand', onClick: () => {
-                serverConnection.userAction(
-                    'setdata', serverConnection.id, {'raisehand': true},
-                );
-            }});
-        if(serverConnection.version !== "1" &&
-           serverConnection.permissions.indexOf('token') >= 0) {
-            items.push({label: 'Invite user', onClick: () => {
-                inviteMenu();
-            }});
+            items.push({
+                label: 'Raise hand',
+                onClick: () => {
+                    serverConnection.userAction(
+                        'setdata',
+                        serverConnection.id,
+                        { raisehand: true },
+                    );
+                },
+            });
+        if (
+            serverConnection.version !== '1' &&
+            serverConnection.permissions.indexOf('token') >= 0
+        ) {
+            items.push({
+                label: 'Invite user',
+                onClick: () => {
+                    inviteMenu();
+                },
+            });
         }
-        if(serverConnection.permissions.indexOf('present') >= 0 && canFile())
-            items.push({label: 'Broadcast file', onClick: presentFile});
-        items.push({label: 'Restart media', onClick: renegotiateStreams});
+        if (serverConnection.permissions.indexOf('present') >= 0 && canFile())
+            items.push({ label: 'Broadcast file', onClick: presentFile });
+        items.push({ label: 'Restart media', onClick: renegotiateStreams });
     } else {
-        items.push({label: 'Send file', onClick: () => {
-            sendFile(id);
-        }});
-        if(serverConnection.permissions.indexOf('op') >= 0) {
-            items.push({type: 'seperator'}); // sic
-            if(user.permissions.indexOf('present') >= 0)
-                items.push({label: 'Forbid presenting', onClick: () => {
-                    serverConnection.userAction('unpresent', id);
-                }});
+        items.push({
+            label: 'Send file',
+            onClick: () => {
+                sendFile(id);
+            },
+        });
+        if (serverConnection.permissions.indexOf('op') >= 0) {
+            items.push({ type: 'seperator' }); // sic
+            if (user.permissions.indexOf('present') >= 0)
+                items.push({
+                    label: 'Forbid presenting',
+                    onClick: () => {
+                        serverConnection.userAction('unpresent', id);
+                    },
+                });
             else
-                items.push({label: 'Allow presenting', onClick: () => {
-                    serverConnection.userAction('present', id);
-                }});
-            items.push({label: 'Mute', onClick: () => {
-                serverConnection.userMessage('mute', id);
-            }});
-            items.push({label: 'Kick out', onClick: () => {
-                serverConnection.userAction('kick', id);
-            }});
-            items.push({label: 'Identify', onClick: () => {
-                serverConnection.userAction('identify', id);
-            }});
+                items.push({
+                    label: 'Allow presenting',
+                    onClick: () => {
+                        serverConnection.userAction('present', id);
+                    },
+                });
+            items.push({
+                label: 'Mute',
+                onClick: () => {
+                    serverConnection.userMessage('mute', id);
+                },
+            });
+            items.push({
+                label: 'Kick out',
+                onClick: () => {
+                    serverConnection.userAction('kick', id);
+                },
+            });
+            items.push({
+                label: 'Identify',
+                onClick: () => {
+                    serverConnection.userAction('identify', id);
+                },
+            });
         }
     }
     /** @ts-ignore */
@@ -2459,34 +2579,31 @@ function addUser(id, userinfo) {
     let div = document.getElementById('users');
     let user = document.createElement('div');
     user.id = 'user-' + id;
-    user.classList.add("user-p");
+    user.classList.add('user-p');
     setUserStatus(id, user, userinfo);
-    user.addEventListener('click', function(e) {
+    user.addEventListener('click', function (e) {
         let elt = e.currentTarget;
-        if(!elt || !(elt instanceof HTMLElement))
+        if (!elt || !(elt instanceof HTMLElement))
             throw new Error("Couldn't find user div");
         userMenu(elt);
     });
 
     let us = div.children;
 
-    if(id === serverConnection.id) {
-        if(us.length === 0)
-            div.appendChild(user);
-        else
-            div.insertBefore(user, us[0]);
+    if (id === serverConnection.id) {
+        if (us.length === 0) div.appendChild(user);
+        else div.insertBefore(user, us[0]);
         return;
     }
 
-    if(userinfo.username) {
-        for(let i = 0; i < us.length; i++) {
+    if (userinfo.username) {
+        for (let i = 0; i < us.length; i++) {
             let child = us[i];
             let childid = child.id.slice('user-'.length);
-            if(childid === serverConnection.id)
-                continue;
+            if (childid === serverConnection.id) continue;
             let childuser = serverConnection.users[childid] || null;
             let childname = (childuser && childuser.username) || null;
-            if(!childname || stringCompare(childname, userinfo.username) > 0) {
+            if (!childname || stringCompare(childname, userinfo.username) > 0) {
                 div.insertBefore(user, child);
                 return;
             }
@@ -2496,13 +2613,13 @@ function addUser(id, userinfo) {
     div.appendChild(user);
 }
 
- /**
-  * @param {string} id
-  * @param {user} userinfo
-  */
+/**
+ * @param {string} id
+ * @param {user} userinfo
+ */
 function changeUser(id, userinfo) {
     let elt = document.getElementById('user-' + id);
-    if(!elt) {
+    if (!elt) {
         addUser(id, userinfo);
         return;
     }
@@ -2516,24 +2633,21 @@ function changeUser(id, userinfo) {
  */
 function setUserStatus(id, elt, userinfo) {
     elt.textContent = userinfo.username ? userinfo.username : '(anon)';
-    if(userinfo.data.raisehand)
-        elt.classList.add('user-status-raisehand');
-    else
-        elt.classList.remove('user-status-raisehand');
+    if (userinfo.data.raisehand) elt.classList.add('user-status-raisehand');
+    else elt.classList.remove('user-status-raisehand');
 
-    let microphone=false, camera = false;
-    for(let label in userinfo.streams) {
-        for(let kind in userinfo.streams[label]) {
-            if(kind === 'audio')
-                microphone = true;
-            else
-                camera = true;
+    let microphone = false,
+        camera = false;
+    for (let label in userinfo.streams) {
+        for (let kind in userinfo.streams[label]) {
+            if (kind === 'audio') microphone = true;
+            else camera = true;
         }
     }
-    if(camera) {
+    if (camera) {
         elt.classList.remove('user-status-microphone');
         elt.classList.add('user-status-camera');
-    } else if(microphone) {
+    } else if (microphone) {
         elt.classList.add('user-status-microphone');
         elt.classList.remove('user-status-camera');
     } else {
@@ -2556,26 +2670,38 @@ function delUser(id) {
  * @param {string} kind
  */
 function gotUser(id, kind) {
-    switch(kind) {
-    case 'add':
-        addUser(id, serverConnection.users[id]);
-        if(Object.keys(serverConnection.users).length === 3)
-            reconsiderSendParameters();
-        break;
-    case 'delete':
-        delUser(id);
-        if(Object.keys(serverConnection.users).length < 3)
-            scheduleReconsiderParameters();
-        break;
-    case 'change':
-        changeUser(id, serverConnection.users[id]);
-        break;
-    default:
-        console.warn('Unknown user kind', kind);
-        break;
+    switch (kind) {
+        case 'add':
+            addUser(id, serverConnection.users[id]);
+            knownAudioRoutes.set(id, audioRouteFor(serverConnection.users[id]));
+            if (Object.keys(serverConnection.users).length === 3)
+                reconsiderSendParameters();
+            break;
+        case 'delete':
+            delUser(id);
+            knownAudioRoutes.delete(id);
+            if (Object.keys(serverConnection.users).length < 3)
+                scheduleReconsiderParameters();
+            break;
+        case 'change':
+            {
+                let user = serverConnection.users[id];
+                let route = audioRouteFor(user);
+                let routeChanged =
+                    knownAudioRoutes.has(id) &&
+                    knownAudioRoutes.get(id) !== route;
+                knownAudioRoutes.set(id, route);
+                changeUser(id, user);
+                if (routeChanged) notifyLeaderOfAudioRoute(id, user);
+            }
+            break;
+        default:
+            console.warn('Unknown user kind', kind);
+            break;
     }
+    refreshPeerLabels();
     updateRoleView();
-    if(id === serverConnection.id && joinedSuccessfully) {
+    if (id === serverConnection.id && joinedSuccessfully) {
         autoPresentForRole();
     }
 }
@@ -2585,12 +2711,9 @@ function displayUsername() {
     let op = serverConnection.permissions.indexOf('op') >= 0;
     let present = serverConnection.permissions.indexOf('present') >= 0;
     let text = '';
-    if(op && present)
-        text = '(op, presenter)';
-    else if(op)
-        text = 'operator';
-    else if(present)
-        text = 'presenter';
+    if (op && present) text = '(op, presenter)';
+    else if (op) text = 'operator';
+    else if (present) text = 'presenter';
     document.getElementById('permspan').textContent = text;
 }
 
@@ -2600,8 +2723,7 @@ let presentRequested = null;
  * @param {string} s
  */
 function capitalise(s) {
-    if(s.length <= 0)
-        return s;
+    if (s.length <= 0) return s;
     return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
@@ -2613,10 +2735,8 @@ function setTitle(title) {
         document.title = title;
         document.getElementById('title').textContent = title;
     }
-    if(title)
-        set(title);
-    else
-        set('Galène');
+    if (title) set(title);
+    else set('Galène');
 }
 
 /**
@@ -2628,16 +2748,16 @@ function setTitle(title) {
 let safariStream = null;
 
 async function openSafariStream() {
-    if(!isSafari())
-        return;
+    if (!isSafari()) return;
 
-    if(!safariStream)
-        safariStream = await navigator.mediaDevices.getUserMedia({audio: true})
+    if (!safariStream)
+        safariStream = await navigator.mediaDevices.getUserMedia({
+            audio: true,
+        });
 }
 
 async function closeSafariStream() {
-    if(!safariStream)
-        return;
+    if (!safariStream) return;
     stopStream(safariStream);
     safariStream = null;
 }
@@ -2652,113 +2772,128 @@ async function closeSafariStream() {
  * @param {string} error
  * @param {string} message
  */
-async function gotJoined(kind, group, perms, status, data, error, message,
-                         resumeToken) {
+async function gotJoined(
+    kind,
+    group,
+    perms,
+    status,
+    data,
+    error,
+    message,
+    resumeToken,
+) {
     let present = presentRequested;
     presentRequested = null;
 
-    switch(kind) {
-    case 'fail':
-        autoPresentAttempted = false;
-        joinedSuccessfully = false;
-        if(resumeAttemptTicket) {
-            clearResumeTicket();
-            resumeAttemptTicket = null;
-            setVisibility('login-container', true);
-            getInputElement('username').focus();
-        }
-        if(probingState === 'probing' && error === 'need-username') {
-            probingState = 'need-username';
-            setVisibility('passwordform', false);
-        } else {
-            token = null;
-            displayError('The server said: ' + message);
-        }
-        closeSafariStream();
-        this.close();
-        setButtonsVisibility();
-        return;
-    case 'redirect':
-        closeSafariStream();
-        this.close();
-        token = null;
-        document.location.href = message;
-        return;
-    case 'leave':
-        autoPresentAttempted = false;
-        joinedSuccessfully = false;
-        clearResumeTicket();
-        resumeAttemptTicket = null;
-        closeSafariStream();
-        this.close();
-        setVisibility('login-container', true);
-        setButtonsVisibility();
-        setChangePassword(null);
-        return;
-    case 'join':
-    case 'change':
-        if(probingState === 'probing') {
-            probingState = 'success';
-            setVisibility('userform', false);
-            setVisibility('passwordform', false);
+    switch (kind) {
+        case 'fail':
+            autoPresentAttempted = false;
+            joinedSuccessfully = false;
+            if (resumeAttemptTicket) {
+                clearResumeTicket();
+                resumeAttemptTicket = null;
+                setVisibility('login-container', true);
+                getInputElement('username').focus();
+            }
+            if (probingState === 'probing' && error === 'need-username') {
+                probingState = 'need-username';
+                setVisibility('passwordform', false);
+            } else {
+                token = null;
+                displayError('The server said: ' + message);
+            }
             closeSafariStream();
             this.close();
             setButtonsVisibility();
             return;
-        } else {
+        case 'redirect':
+            closeSafariStream();
+            this.close();
             token = null;
-        }
-        if(resumeToken) {
-            try {
-                sessionStorage.setItem(resumeStorageKey(), resumeToken);
-            } catch(e) {
-                console.warn('Could not save meeting resume ticket:', e);
-            }
-        }
-        resumeAttemptTicket = null;
-        // don't discard endPoint and friends
-        for(let key in status)
-            groupStatus[key] = status[key];
-        setTitle((status && status.displayName) || capitalise(group));
-        displayUsername();
-        setButtonsVisibility();
-        updateRoleView();
-        joinedSuccessfully = false;
-        setChangePassword(pwAuth && !!groupStatus.canChangePassword &&
-                          serverConnection.username
-        );
-        openSafariStream();
-        if(kind === 'change') {
-            joinedSuccessfully = true;
-            autoPresentForRole();
+            document.location.href = message;
+            return;
+        case 'leave': {
+            autoPresentAttempted = false;
+            joinedSuccessfully = false;
+            let socketClosed =
+                this.socket && this.socket.readyState === WebSocket.CLOSED;
+            if (!socketClosed) clearResumeTicket();
+            resumeAttemptTicket = null;
+            closeSafariStream();
+            this.close();
+            setVisibility('login-container', true);
+            setButtonsVisibility();
+            setChangePassword(null);
             return;
         }
-        break;
-    default:
-        token = null;
-        displayError('Unknown join message');
-        closeSafariStream();
-        this.close();
-        return;
+        case 'join':
+        case 'change':
+            if (probingState === 'probing') {
+                probingState = 'success';
+                setVisibility('userform', false);
+                setVisibility('passwordform', false);
+                closeSafariStream();
+                this.close();
+                setButtonsVisibility();
+                return;
+            } else {
+                token = null;
+            }
+            if (resumeToken) {
+                try {
+                    sessionStorage.setItem(resumeStorageKey(), resumeToken);
+                } catch (e) {
+                    console.warn('Could not save meeting resume ticket:', e);
+                }
+            }
+            resumeAttemptTicket = null;
+            resumeReconnectAttempt = 0;
+            if (resumeReconnectTimer) {
+                clearTimeout(resumeReconnectTimer);
+                resumeReconnectTimer = null;
+            }
+            // don't discard endPoint and friends
+            for (let key in status) groupStatus[key] = status[key];
+            setTitle((status && status.displayName) || capitalise(group));
+            displayUsername();
+            setButtonsVisibility();
+            updateRoleView();
+            joinedSuccessfully = false;
+            setChangePassword(
+                pwAuth &&
+                    !!groupStatus.canChangePassword &&
+                    serverConnection.username,
+            );
+            openSafariStream();
+            if (kind === 'change') {
+                joinedSuccessfully = true;
+                autoPresentForRole();
+                return;
+            }
+            break;
+        default:
+            token = null;
+            displayError('Unknown join message');
+            closeSafariStream();
+            this.close();
+            return;
     }
 
-    if(status.locked)
-        displayWarning('This group is locked');
+    if (status.locked) displayWarning('This group is locked');
 
-    if(typeof RTCPeerConnection === 'undefined')
+    if (typeof RTCPeerConnection === 'undefined')
         displayWarning("This browser doesn't support WebRTC");
-    else
-        this.request(mapRequest(getSettings().request));
+    else this.request(mapRequest(getSettings().request));
 
-    if(('mediaDevices' in navigator) &&
-       ('getUserMedia' in navigator.mediaDevices) &&
-       serverConnection.permissions.indexOf('present') >= 0 &&
-       !findUpMedia('camera')) {
-        if(present) {
-            if(present === 'mike')
-                updateSettings({video: ''});
-            else if(present === 'both')
-                delSetting('video');
+    if (
+        'mediaDevices' in navigator &&
+        'getUserMedia' in navigator.mediaDevices &&
+        serverConnection.permissions.indexOf('present') >= 0 &&
+        !findUpMedia('camera')
+    ) {
+        if (present) {
+            if (present === 'mike') updateSettings({ video: '' });
+            else if (present === 'both') delSetting('video');
             reflectSettings();
 
             let button = getButtonElement('presentbutton');
@@ -2769,14 +2904,11 @@ async function gotJoined(kind, group, perms, status, data, error, message,
                 button.disabled = false;
             }
         } else {
-            displayMessage(
-                "Press Enable to enable your camera or microphone"
-            );
+            displayMessage('Press Enable to enable your camera or microphone');
         }
     }
     joinedSuccessfully = true;
-    if(!present)
-        autoPresentForRole();
+    if (!present) autoPresentForRole();
 }
 
 /**
@@ -2785,32 +2917,33 @@ async function gotJoined(kind, group, perms, status, data, error, message,
 function gotFileTransfer(f) {
     f.onevent = gotFileTransferEvent;
     let p = document.createElement('p');
-    if(f.up)
+    if (f.up)
         p.textContent =
-        `We have offered to send a file called "${f.name}" ` +
-        `to user ${f.username}.`;
+            `We have offered to send a file called "${f.name}" ` +
+            `to user ${f.username}.`;
     else
         p.textContent =
-        `User ${f.username} offered to send us a file ` +
-        `called "${f.name}" of size ${f.size}.`
-    let bno = null, byes = null;
-    if(!f.up) {
+            `User ${f.username} offered to send us a file ` +
+            `called "${f.name}" of size ${f.size}.`;
+    let bno = null,
+        byes = null;
+    if (!f.up) {
         byes = document.createElement('button');
         byes.textContent = 'Accept';
-        byes.onclick = function(e) {
+        byes.onclick = function (e) {
             f.receive();
         };
-        byes.id = "byes-" + f.fullid();
+        byes.id = 'byes-' + f.fullid();
     }
     bno = document.createElement('button');
     bno.textContent = f.up ? 'Cancel' : 'Reject';
-    bno.onclick = function(e) {
+    bno.onclick = function (e) {
         f.cancel();
     };
-    bno.id = "bno-" + f.fullid();
+    bno.id = 'bno-' + f.fullid();
     let status = document.createElement('span');
     status.id = 'status-' + f.fullid();
-    if(!f.up) {
+    if (!f.up) {
         status.textContent =
             '(Choosing "Accept" will disclose your IP address.)';
     }
@@ -2820,10 +2953,8 @@ function gotFileTransfer(f) {
     let div = document.createElement('div');
     div.id = 'file-' + f.fullid();
     div.appendChild(p);
-    if(byes)
-        div.appendChild(byes);
-    if(bno)
-        div.appendChild(bno);
+    if (byes) div.appendChild(byes);
+    if (bno) div.appendChild(bno);
     div.appendChild(statusp);
     div.classList.add('message');
     div.classList.add('message-private');
@@ -2840,16 +2971,15 @@ function gotFileTransfer(f) {
  */
 function setFileStatus(f, status, value) {
     let statuselt = document.getElementById('status-' + f.fullid());
-    if(!statuselt)
-        throw new Error("Couldn't find statusp");
+    if (!statuselt) throw new Error("Couldn't find statusp");
     statuselt.textContent = status;
-    if(value) {
+    if (value) {
         let progress = document.getElementById('progress-' + f.fullid());
-         if(!progress || !(progress instanceof HTMLProgressElement))
+        if (!progress || !(progress instanceof HTMLProgressElement))
             throw new Error("Couldn't find progress element");
         progress.value = value;
         let label = document.getElementById('progresstext-' + f.fullid());
-        let percent = Math.round(100 * value / progress.max);
+        let percent = Math.round((100 * value) / progress.max);
         label.textContent = `${percent}%`;
     }
 }
@@ -2860,8 +2990,7 @@ function setFileStatus(f, status, value) {
  */
 function createFileProgress(f, max) {
     let statusp = document.getElementById('statusp-' + f.fullid());
-    if(!statusp)
-        throw new Error("Couldn't find status div");
+    if (!statusp) throw new Error("Couldn't find status div");
     /** @type HTMLProgressElement */
     let progress = document.createElement('progress');
     progress.id = 'progress-' + f.fullid();
@@ -2883,27 +3012,23 @@ function createFileProgress(f, max) {
  */
 function delFileStatusButtons(f, delyes, delno, delprogress) {
     let div = document.getElementById('file-' + f.fullid());
-    if(!div)
-        throw new Error("Couldn't find file div");
-    if(delyes) {
-        let byes = document.getElementById('byes-' + f.fullid())
-        if(byes)
-            div.removeChild(byes);
+    if (!div) throw new Error("Couldn't find file div");
+    if (delyes) {
+        let byes = document.getElementById('byes-' + f.fullid());
+        if (byes) div.removeChild(byes);
     }
-    if(delno) {
-        let bno = document.getElementById('bno-' + f.fullid())
-        if(bno)
-            div.removeChild(bno);
+    if (delno) {
+        let bno = document.getElementById('bno-' + f.fullid());
+        if (bno) div.removeChild(bno);
     }
-    if(delprogress) {
+    if (delprogress) {
         let statusp = document.getElementById('statusp-' + f.fullid());
         let progress = document.getElementById('progress-' + f.fullid());
-        let progresstext =
-            document.getElementById('progresstext-' + f.fullid());
-        if(progress)
-            statusp.removeChild(progress);
-        if(progresstext)
-            statusp.removeChild(progresstext);
+        let progresstext = document.getElementById(
+            'progresstext-' + f.fullid(),
+        );
+        if (progress) statusp.removeChild(progress);
+        if (progresstext) statusp.removeChild(progresstext);
     }
 }
 
@@ -2914,44 +3039,42 @@ function delFileStatusButtons(f, delyes, delno, delprogress) {
  */
 function gotFileTransferEvent(state, data) {
     let f = this;
-    switch(state) {
-    case 'inviting':
-        break;
-    case 'connecting':
-        delFileStatusButtons(f, true, false);
-        setFileStatus(f, 'Connecting...');
-        createFileProgress(f, f.size);
-        break;
-    case 'connected':
-        setFileStatus(f, f.up ? 'Sending...' : 'Receiving...', f.datalen);
-        break;
-    case 'done':
-        delFileStatusButtons(f, true, true, true);
-        setFileStatus(f, 'Done.');
-        if(!f.up) {
-            let url = URL.createObjectURL(data);
-            let a = document.createElement('a');
-            a.href = url;
-            a.textContent = f.name;
-            a.download = f.name;
-            a.type = f.mimetype;
-            a.click();
-            URL.revokeObjectURL(url);
-        }
-        break;
-    case 'cancelled':
-        delFileStatusButtons(f, true, true, true);
-        if(data)
-            setFileStatus(f, `Cancelled: ${data.toString()}.`);
-        else
-            setFileStatus(f, 'Cancelled.');
-        break;
-    case 'closed':
-        break;
-    default:
-        console.error(`Unexpected state "${state}"`);
-        f.cancel(`unexpected state "${state}" (this shouldn't happen)`);
-        break;
+    switch (state) {
+        case 'inviting':
+            break;
+        case 'connecting':
+            delFileStatusButtons(f, true, false);
+            setFileStatus(f, 'Connecting...');
+            createFileProgress(f, f.size);
+            break;
+        case 'connected':
+            setFileStatus(f, f.up ? 'Sending...' : 'Receiving...', f.datalen);
+            break;
+        case 'done':
+            delFileStatusButtons(f, true, true, true);
+            setFileStatus(f, 'Done.');
+            if (!f.up) {
+                let url = URL.createObjectURL(data);
+                let a = document.createElement('a');
+                a.href = url;
+                a.textContent = f.name;
+                a.download = f.name;
+                a.type = f.mimetype;
+                a.click();
+                URL.revokeObjectURL(url);
+            }
+            break;
+        case 'cancelled':
+            delFileStatusButtons(f, true, true, true);
+            if (data) setFileStatus(f, `Cancelled: ${data.toString()}.`);
+            else setFileStatus(f, 'Cancelled.');
+            break;
+        case 'closed':
+            break;
+        default:
+            console.error(`Unexpected state "${state}"`);
+            f.cancel(`unexpected state "${state}" (this shouldn't happen)`);
+            break;
     }
 }
 
@@ -2965,133 +3088,142 @@ function gotFileTransferEvent(state, data) {
  * @param {string} error
  * @param {any} message
  */
-function gotUserMessage(id, dest, username, time, privileged, kind, error, message) {
-    switch(kind) {
-    case 'kicked':
-    case 'error':
-    case 'warning':
-    case 'info': {
-        if(!privileged) {
-            console.error(`Got unprivileged message of kind ${kind}`);
-            return;
-        }
-        let from = id ? (username || 'Anonymous') : 'The Server';
-        displayError(`${from} said: ${message}`, kind);
-        break;
-    }
-    case 'openUrl': {
-        if(!privileged) {
-            console.error(`Got unprivileged message of kind ${kind}`);
-            return;
-        }
-        // Browsers block window.open() unless it is triggered by a user
-        // gesture. Use a normal link so the user can open it with a click.
-        // Toastify positions itself by setting inline styles, which this
-        // page's Content-Security-Policy blocks; the CSS class positions
-        // this notice without inline styles.
-        let toast = document.getElementById('assignment-toast');
-        if(!toast) {
-            toast = document.createElement('div');
-            toast.id = 'assignment-toast';
-            toast.className = 'assignment-toast';
-            toast.setAttribute('role', 'status');
-
-            let link = document.createElement('a');
-            link.id = 'assignment-toast-link';
-            link.target = '_blank';
-            link.rel = 'noopener noreferrer';
-            toast.appendChild(link);
-
-            let close = document.createElement('button');
-            close.type = 'button';
-            close.className = 'assignment-toast-close';
-            close.setAttribute('aria-label', 'Dismiss assignment link');
-            close.textContent = '×';
-            close.addEventListener('click', () => toast.remove());
-            toast.appendChild(close);
-            document.body.appendChild(toast);
-        }
-        let link = document.getElementById('assignment-toast-link');
-        if(link instanceof HTMLAnchorElement) {
-            link.href = String(message);
-            link.textContent = 'Tap here to join the assignment';
-        }
-        break;
-    }
-    case 'mute': {
-        if(!privileged) {
-            console.error(`Got unprivileged message of kind ${kind}`);
-            return;
-        }
-        setLocalMute(true, true);
-        let by = username ? ' by ' + username : '';
-        displayWarning(`You have been muted${by}`);
-        break;
-    }
-    case 'token': {
-        if(!privileged) {
-            console.error(`Got unprivileged message of kind ${kind}`);
-            return;
-        }
-        if(error) {
-            displayError(`Token operation failed: ${message}`)
-            return
-        }
-        if(typeof message !== 'object') {
-            displayError('Unexpected type for token');
-            return;
-        }
-        let f = formatToken(message, false);
-        localMessage(f[0] + ': ' + f[1]);
-        if('share' in navigator) {
-            try {
-                navigator.share({
-                    title: `Invitation to Galene group ${message.group}`,
-                    text: f[0],
-                    url: f[1],
-                });
-            } catch(e) {
-                console.warn("Share failed", e);
+function gotUserMessage(
+    id,
+    dest,
+    username,
+    time,
+    privileged,
+    kind,
+    error,
+    message,
+) {
+    switch (kind) {
+        case 'kicked':
+        case 'error':
+        case 'warning':
+        case 'info': {
+            if (!privileged) {
+                console.error(`Got unprivileged message of kind ${kind}`);
+                return;
             }
+            let from = id ? username || 'Anonymous' : 'The Server';
+            displayError(`${from} said: ${message}`, kind);
+            break;
         }
-        break;
+        case 'openUrl': {
+            if (!privileged) {
+                console.error(`Got unprivileged message of kind ${kind}`);
+                return;
+            }
+            // Browsers block window.open() unless it is triggered by a user
+            // gesture. Use a normal link so the user can open it with a click.
+            // Toastify positions itself by setting inline styles, which this
+            // page's Content-Security-Policy blocks; the CSS class positions
+            // this notice without inline styles.
+            let toast = document.getElementById('assignment-toast');
+            if (!toast) {
+                toast = document.createElement('div');
+                toast.id = 'assignment-toast';
+                toast.className = 'assignment-toast';
+                toast.setAttribute('role', 'status');
+
+                let link = document.createElement('a');
+                link.id = 'assignment-toast-link';
+                link.target = '_blank';
+                link.rel = 'noopener noreferrer';
+                toast.appendChild(link);
+
+                let close = document.createElement('button');
+                close.type = 'button';
+                close.className = 'assignment-toast-close';
+                close.setAttribute('aria-label', 'Dismiss assignment link');
+                close.textContent = '×';
+                close.addEventListener('click', () => toast.remove());
+                toast.appendChild(close);
+                document.body.appendChild(toast);
+            }
+            let link = document.getElementById('assignment-toast-link');
+            if (link instanceof HTMLAnchorElement) {
+                link.href = String(message);
+                link.textContent = 'Tap here to join the assignment';
+            }
+            break;
+        }
+        case 'mute': {
+            if (!privileged) {
+                console.error(`Got unprivileged message of kind ${kind}`);
+                return;
+            }
+            setLocalMute(true, true);
+            let by = username ? ' by ' + username : '';
+            displayWarning(`You have been muted${by}`);
+            break;
+        }
+        case 'token': {
+            if (!privileged) {
+                console.error(`Got unprivileged message of kind ${kind}`);
+                return;
+            }
+            if (error) {
+                displayError(`Token operation failed: ${message}`);
+                return;
+            }
+            if (typeof message !== 'object') {
+                displayError('Unexpected type for token');
+                return;
+            }
+            let f = formatToken(message, false);
+            localMessage(f[0] + ': ' + f[1]);
+            if ('share' in navigator) {
+                try {
+                    navigator.share({
+                        title: `Invitation to Galene group ${message.group}`,
+                        text: f[0],
+                        url: f[1],
+                    });
+                } catch (e) {
+                    console.warn('Share failed', e);
+                }
+            }
+            break;
+        }
+        case 'tokenlist': {
+            if (!privileged) {
+                console.error(`Got unprivileged message of kind ${kind}`);
+                return;
+            }
+            if (error) {
+                displayError(`Token operation failed: ${message}`);
+                return;
+            }
+            let s = '';
+            for (let i = 0; i < message.length; i++) {
+                let f = formatToken(message[i], true);
+                s = s + f[0] + ': ' + f[1] + '\n';
+            }
+            localMessage(s);
+            break;
+        }
+        case 'userinfo': {
+            if (!privileged) {
+                console.error(`Got unprivileged message of kind ${kind}`);
+                return;
+            }
+            let u = message.username
+                ? 'username ' + message.username
+                : 'unknown username';
+            let a = message.address
+                ? 'address ' + message.address
+                : 'unknown address';
+            localMessage(`User ${message.id} has ${u} and ${a}.`);
+            break;
+        }
+        default:
+            console.warn(`Got unknown user message ${kind}`);
+            break;
     }
-    case 'tokenlist': {
-        if(!privileged) {
-            console.error(`Got unprivileged message of kind ${kind}`);
-            return;
-        }
-        if(error) {
-            displayError(`Token operation failed: ${message}`)
-            return
-        }
-        let s = '';
-        for(let i = 0; i < message.length; i++) {
-            let f = formatToken(message[i], true);
-            s = s + f[0] + ': ' + f[1] + "\n";
-        }
-        localMessage(s);
-        break;
-    }
-    case 'userinfo': {
-        if(!privileged) {
-            console.error(`Got unprivileged message of kind ${kind}`);
-            return;
-        }
-        let u = message.username ?
-            'username ' + message.username :
-            'unknown username';
-        let a = message.address ?
-            'address ' + message.address :
-            'unknown address';
-        localMessage(`User ${message.id} has ${u} and ${a}.`);
-        break;
-    }
-    default:
-        console.warn(`Got unknown user message ${kind}`);
-        break;
-    }
-};
+}
 
 /**
  * @param {Object} token
@@ -3102,36 +3234,34 @@ function formatToken(token, details) {
     let params = new URLSearchParams();
     params.append('token', token.token);
     url.search = params.toString();
-    let foruser = '', by = '', togroup = '';
-    if(token.username)
-        foruser = ` for user ${token.username}`;
-    if(details) {
-        if(token.issuedBy)
-            by = ' issued by ' + token.issuedBy;
-        if(token.issuedAt) {
-            if(by === '')
-                by = ' issued at ' + (new Date(token.issuedAt)).toLocaleString();
-            else
-                by = by + ' at ' + (new Date(token.issuedAt)).toLocaleString();
+    let foruser = '',
+        by = '',
+        togroup = '';
+    if (token.username) foruser = ` for user ${token.username}`;
+    if (details) {
+        if (token.issuedBy) by = ' issued by ' + token.issuedBy;
+        if (token.issuedAt) {
+            if (by === '')
+                by = ' issued at ' + new Date(token.issuedAt).toLocaleString();
+            else by = by + ' at ' + new Date(token.issuedAt).toLocaleString();
         }
     } else {
-        if(token.group)
-            togroup = ' to group ' + token.group;
+        if (token.group) togroup = ' to group ' + token.group;
     }
     let since = '';
-    if(token["not-before"])
-        since = ` since ${(new Date(token['not-before'])).toLocaleString()}`
+    if (token['not-before'])
+        since = ` since ${new Date(token['not-before']).toLocaleString()}`;
     /** @type{Date} */
     let expires = null;
     let until = '';
-    if(token.expires) {
-        expires = new Date(token.expires)
+    if (token.expires) {
+        expires = new Date(token.expires);
         until = ` until ${expires.toLocaleString()}`;
     }
     return [
-        (expires && (expires >= new Date())) ?
-            `Invitation${foruser}${togroup}${by} valid${since}${until}` :
-            `Expired invitation${foruser}${togroup}${by}`,
+        expires && expires >= new Date()
+            ? `Invitation${foruser}${togroup}${by} valid${since}${until}`
+            : `Expired invitation${foruser}${togroup}${by}`,
         url.toString(),
     ];
 }
@@ -3142,14 +3272,12 @@ function formatToken(token, details) {
 function setCaption(message) {
     let container = document.getElementById('captions-container');
     let captions = document.getElementById('captions');
-    if(!message) {
+    if (!message) {
         captions.replaceChildren();
         container.classList.add('invisible');
     } else {
-        if(message instanceof HTMLElement)
-            captions.replaceChildren(message);
-        else
-            captions.textContent = message;
+        if (message instanceof HTMLElement) captions.replaceChildren(message);
+        else captions.textContent = message;
         container.classList.remove('invisible');
     }
 }
@@ -3160,7 +3288,7 @@ let captionsTimer = null;
  * @param {string|HTMLElement} message
  */
 function displayCaption(message) {
-    if(captionsTimer !== null) {
+    if (captionsTimer !== null) {
         clearTimeout(captionsTimer);
         captionsTimer = null;
     }
@@ -3196,15 +3324,21 @@ function localMessage(message) {
 let commands = {};
 
 function operatorPredicate() {
-    if(serverConnection && serverConnection.permissions &&
-       serverConnection.permissions.indexOf('op') >= 0)
+    if (
+        serverConnection &&
+        serverConnection.permissions &&
+        serverConnection.permissions.indexOf('op') >= 0
+    )
         return null;
     return 'You are not an operator';
 }
 
 function recordingPredicate() {
-    if(serverConnection && serverConnection.permissions &&
-       serverConnection.permissions.indexOf('record') >= 0)
+    if (
+        serverConnection &&
+        serverConnection.permissions &&
+        serverConnection.permissions.indexOf('record') >= 0
+    )
         return null;
     return 'You are not allowed to record';
 }
@@ -3214,61 +3348,60 @@ commands.help = {
     f: (c, r) => {
         /** @type {string[]} */
         let cs = [];
-        for(let cmd in commands) {
+        for (let cmd in commands) {
             let c = commands[cmd];
-            if(!c.description)
-                continue;
-            if(c.predicate && c.predicate())
-                continue;
-            cs.push(`/${cmd}${c.parameters?' ' + c.parameters:''}: ${c.description}`);
+            if (!c.description) continue;
+            if (c.predicate && c.predicate()) continue;
+            cs.push(
+                `/${cmd}${c.parameters ? ' ' + c.parameters : ''}: ${c.description}`,
+            );
         }
         localMessage(cs.sort().join('\n'));
-    }
+    },
 };
 
 commands.me = {
     f: (c, r) => {
         // handled as a special case
         throw new Error("this shouldn't happen");
-    }
+    },
 };
 
 commands.set = {
     f: (c, r) => {
-        if(!r) {
+        if (!r) {
             let settings = getSettings();
-            let s = "";
-            for(let key in settings)
+            let s = '';
+            for (let key in settings)
                 s = s + `${key}: ${JSON.stringify(settings[key])}\n`;
             localMessage(s);
             return;
         }
         let p = parseCommand(r);
         let value;
-        if(p[1]) {
+        if (p[1]) {
             value = JSON.parse(p[1]);
         } else {
             value = true;
         }
         updateSetting(p[0], value);
         reflectSettings();
-    }
+    },
 };
 
 commands.unset = {
     f: (c, r) => {
         delSetting(r.trim());
         return;
-    }
+    },
 };
 
 commands.leave = {
-    description: "leave group",
+    description: 'leave group',
     f: (c, r) => {
-        if(!serverConnection)
-            throw new Error('Not connected');
+        if (!serverConnection) throw new Error('Not connected');
         serverConnection.leave(serverConnection.group);
-    }
+    },
 };
 
 commands.lock = {
@@ -3277,7 +3410,7 @@ commands.lock = {
     parameters: '[message]',
     f: (c, r) => {
         serverConnection.groupAction('lock', r);
-    }
+    },
 };
 
 commands.unlock = {
@@ -3285,7 +3418,7 @@ commands.unlock = {
     description: 'unlock this group, revert the effect of /lock',
     f: (c, r) => {
         serverConnection.groupAction('unlock');
-    }
+    },
 };
 
 commands.record = {
@@ -3293,7 +3426,7 @@ commands.record = {
     description: 'start recording',
     f: (c, r) => {
         serverConnection.groupAction('record');
-    }
+    },
 };
 
 commands.unrecord = {
@@ -3301,7 +3434,7 @@ commands.unrecord = {
     description: 'stop recording',
     f: (c, r) => {
         serverConnection.groupAction('unrecord');
-    }
+    },
 };
 
 commands.subgroups = {
@@ -3309,7 +3442,7 @@ commands.subgroups = {
     description: 'list subgroups',
     f: (c, r) => {
         serverConnection.groupAction('subgroups');
-    }
+    },
 };
 
 /**
@@ -3329,57 +3462,51 @@ const units = {
  * @returns {Date|number}
  */
 function parseExpiration(s) {
-    if(!s)
-        return null;
-    let re = /^([0-9]+)(s|min|h|d|mon|yr)$/
-    let e = re.exec(s)
-    if(e) {
+    if (!s) return null;
+    let re = /^([0-9]+)(s|min|h|d|mon|yr)$/;
+    let e = re.exec(s);
+    if (e) {
         let unit = units[e[2]];
-        if(!unit)
-            throw new Error(`Couldn't find unit ${e[2]}`);
+        if (!unit) throw new Error(`Couldn't find unit ${e[2]}`);
         return parseInt(e[1]) * unit;
     }
     let d = new Date(s);
-    if(d.toString() === 'Invalid Date')
+    if (d.toString() === 'Invalid Date')
         throw new Error("Couldn't parse expiration date");
     return d;
 }
 
 function makeTokenPredicate() {
-    return (serverConnection.permissions.indexOf('token') < 0 ?
-            "You don't have permission to create tokens" : null);
+    return serverConnection.permissions.indexOf('token') < 0
+        ? "You don't have permission to create tokens"
+        : null;
 }
 
 function editTokenPredicate() {
-    return (serverConnection.permissions.indexOf('token') < 0 ||
-            serverConnection.permissions.indexOf('op') < 0 ?
-            "You don't have permission to edit or list tokens" : null);
+    return serverConnection.permissions.indexOf('token') < 0 ||
+        serverConnection.permissions.indexOf('op') < 0
+        ? "You don't have permission to edit or list tokens"
+        : null;
 }
 
 /**
  * @param {Object} [template]
  */
 function makeToken(template) {
-    if(!template)
-        template = {};
+    if (!template) template = {};
     let v = {
         group: group,
-    }
-    if('username' in template)
-        v.username = template.username;
-    if('expires' in template)
-        v.expires = template.expires;
-    else
-        v.expires = units.d;
-    if('not-before' in template)
-        v["not-before"] = template["not-before"];
-    if('permissions' in template)
-        v.permissions = template.permissions;
+    };
+    if ('username' in template) v.username = template.username;
+    if ('expires' in template) v.expires = template.expires;
+    else v.expires = units.d;
+    if ('not-before' in template) v['not-before'] = template['not-before'];
+    if ('permissions' in template) v.permissions = template.permissions;
     else {
         v.permissions = [];
-        if(serverConnection.permissions.indexOf('present') >= 0)
+        if (serverConnection.permissions.indexOf('present') >= 0)
             v.permissions.push('present');
-        if(serverConnection.permissions.indexOf('message') >= 0)
+        if (serverConnection.permissions.indexOf('message') >= 0)
             v.permissions.push('message');
     }
     serverConnection.groupAction('maketoken', v);
@@ -3387,29 +3514,27 @@ function makeToken(template) {
 
 commands.invite = {
     predicate: makeTokenPredicate,
-    description: "create an invitation link",
-    parameters: "[username] [expiration]",
+    description: 'create an invitation link',
+    parameters: '[username] [expiration]',
     f: (c, r) => {
         let p = parseCommand(r);
         let template = {};
-        if(p[0])
-            template.username = p[0];
+        if (p[0]) template.username = p[0];
         let expires = parseExpiration(p[1]);
-        if(expires)
-            template.expires = expires;
+        if (expires) template.expires = expires;
         makeToken(template);
-    }
-}
+    },
+};
 
 /**
  * @param {string} t
  */
 function parseToken(t) {
     let m = /^https?:\/\/.*?token=([^?]+)/.exec(t);
-    if(m) {
+    if (m) {
         return m[1];
-    } else if(!/^https?:\/\//.exec(t)) {
-        return t
+    } else if (!/^https?:\/\//.exec(t)) {
+        return t;
     } else {
         throw new Error("Couldn't parse link");
     }
@@ -3417,45 +3542,42 @@ function parseToken(t) {
 
 commands.reinvite = {
     predicate: editTokenPredicate,
-    description: "extend an invitation link",
-    parameters: "link [expiration]",
+    description: 'extend an invitation link',
+    parameters: 'link [expiration]',
     f: (c, r) => {
         let p = parseCommand(r);
-        let v = {}
+        let v = {};
         v.token = parseToken(p[0]);
-        if(p[1])
-            v.expires = parseExpiration(p[1]);
-        else
-            v.expires = units.d;
+        if (p[1]) v.expires = parseExpiration(p[1]);
+        else v.expires = units.d;
         serverConnection.groupAction('edittoken', v);
-    }
-}
+    },
+};
 
 commands.revoke = {
     predicate: editTokenPredicate,
-    description: "revoke an invitation link",
-    parameters: "link",
+    description: 'revoke an invitation link',
+    parameters: 'link',
     f: (c, r) => {
         let token = parseToken(r);
         serverConnection.groupAction('edittoken', {
             token: token,
             expires: -units.s,
         });
-    }
-}
+    },
+};
 
 commands.listtokens = {
     predicate: editTokenPredicate,
-    description: "list invitation links",
+    description: 'list invitation links',
     f: (c, r) => {
         serverConnection.groupAction('listtokens');
-    }
-}
+    },
+};
 
 function renegotiateStreams() {
-    for(let id in serverConnection.up)
-        serverConnection.up[id].restartIce();
-    for(let id in serverConnection.down)
+    for (let id in serverConnection.up) serverConnection.up[id].restartIce();
+    for (let id in serverConnection.down)
         serverConnection.down[id].restartIce();
 }
 
@@ -3463,28 +3585,28 @@ commands.renegotiate = {
     description: 'renegotiate media streams',
     f: (c, r) => {
         renegotiateStreams();
-    }
+    },
 };
 
 commands.replace = {
     f: (c, r) => {
         replaceUpStreams(null);
-    }
+    },
 };
 
 commands.sharescreen = {
     description: 'start a screen share',
     f: (c, r) => {
         addShareMedia();
-    }
-}
+    },
+};
 
 commands.unsharescreen = {
     description: 'stop screen share',
     f: (c, r) => {
         closeUpMedia('screenshare');
-    }
-}
+    },
+};
 
 /**
  * parseCommand splits a string into two space-separated parts.  The first
@@ -3495,28 +3617,24 @@ commands.unsharescreen = {
  */
 function parseCommand(line) {
     let i = 0;
-    while(i < line.length && line[i] === ' ')
-        i++;
+    while (i < line.length && line[i] === ' ') i++;
     let start = ' ';
-    if(i < line.length && (line[i] === '"' || line[i] === "'")) {
+    if (i < line.length && (line[i] === '"' || line[i] === "'")) {
         start = line[i];
         i++;
     }
-    let first = "";
-    while(i < line.length) {
-        if(line[i] === start) {
-            if(start !== ' ')
-                i++;
+    let first = '';
+    while (i < line.length) {
+        if (line[i] === start) {
+            if (start !== ' ') i++;
             break;
         }
-        if(line[i] === '\\' && i < line.length - 1)
-            i++;
+        if (line[i] === '\\' && i < line.length - 1) i++;
         first = first + line[i];
         i++;
     }
 
-    while(i < line.length && line[i] === ' ')
-        i++;
+    while (i < line.length && line[i] === ' ') i++;
     return [first, line.slice(i)];
 }
 
@@ -3524,13 +3642,11 @@ function parseCommand(line) {
  * @param {string} user
  */
 function findUserId(user) {
-    if(user in serverConnection.users)
-        return user;
+    if (user in serverConnection.users) return user;
 
-    for(let id in serverConnection.users) {
+    for (let id in serverConnection.users) {
         let u = serverConnection.users[id];
-        if(u && u.username === user)
-            return id;
+        if (u && u.username === user) return id;
     }
     return null;
 }
@@ -3541,21 +3657,17 @@ function findUserId(user) {
 */
 function userCommand(c, r) {
     let p = parseCommand(r);
-    if(!p[0])
-        throw new Error(`/${c} requires parameters`);
+    if (!p[0]) throw new Error(`/${c} requires parameters`);
     let id = findUserId(p[0]);
-    if(!id)
-        throw new Error(`Unknown user ${p[0]}`);
+    if (!id) throw new Error(`Unknown user ${p[0]}`);
     serverConnection.userAction(c, id, p[1]);
 }
 
 function userMessage(c, r) {
     let p = parseCommand(r);
-    if(!p[0])
-        throw new Error(`/${c} requires parameters`);
+    if (!p[0]) throw new Error(`/${c} requires parameters`);
     let id = findUserId(p[0]);
-    if(!id)
-        throw new Error(`Unknown user ${p[0]}`);
+    if (!id) throw new Error(`Unknown user ${p[0]}`);
     serverConnection.userMessage(c, id, p[1]);
 }
 
@@ -3627,8 +3739,8 @@ commands.muteall = {
     predicate: operatorPredicate,
     f: (c, r) => {
         serverConnection.userMessage('mute', null, null, true);
-    }
-}
+    },
+};
 
 commands.warn = {
     parameters: 'user message',
@@ -3644,8 +3756,7 @@ commands.wall = {
     description: 'send a warning to all users',
     predicate: operatorPredicate,
     f: (c, r) => {
-        if(!r)
-            throw new Error('empty message');
+        if (!r) throw new Error('empty message');
         serverConnection.userMessage('warning', '', r);
     },
 };
@@ -3653,20 +3764,20 @@ commands.wall = {
 commands.raise = {
     description: 'raise hand',
     f: (c, r) => {
-        serverConnection.userAction(
-            "setdata", serverConnection.id, {"raisehand": true},
-        );
-    }
-}
+        serverConnection.userAction('setdata', serverConnection.id, {
+            raisehand: true,
+        });
+    },
+};
 
 commands.unraise = {
     description: 'unraise hand',
     f: (c, r) => {
-        serverConnection.userAction(
-            "setdata", serverConnection.id, {"raisehand": null},
-        );
-    }
-}
+        serverConnection.userAction('setdata', serverConnection.id, {
+            raisehand: null,
+        });
+    },
+};
 
 /** @returns {boolean} */
 function canFile() {
@@ -3681,13 +3792,13 @@ function canFile() {
 function presentFile() {
     let input = document.createElement('input');
     input.type = 'file';
-    input.accept="audio/*,video/*";
-    input.onchange = function(e) {
-        if(!(this instanceof HTMLInputElement))
+    input.accept = 'audio/*,video/*';
+    input.onchange = function (e) {
+        if (!(this instanceof HTMLInputElement))
             throw new Error('Unexpected type for this');
         let files = this.files;
-        for(let i = 0; i < files.length; i++) {
-            addFileMedia(files[i]).catch(e => {
+        for (let i = 0; i < files.length; i++) {
+            addFileMedia(files[i]).catch((e) => {
                 console.error(e);
                 displayError(e);
             });
@@ -3702,15 +3813,17 @@ commands.presentfile = {
         presentFile();
     },
     predicate: () => {
-        if(!canFile())
+        if (!canFile())
             return 'Your browser does not support presenting arbitrary files';
-        if(!serverConnection || !serverConnection.permissions ||
-           serverConnection.permissions.indexOf('present') < 0)
+        if (
+            !serverConnection ||
+            !serverConnection.permissions ||
+            serverConnection.permissions.indexOf('present') < 0
+        )
             return 'You are not authorised to present.';
         return null;
-    }
+    },
 };
-
 
 /**
  * @param {string} id
@@ -3718,14 +3831,14 @@ commands.presentfile = {
 function sendFile(id) {
     let input = document.createElement('input');
     input.type = 'file';
-    input.onchange = function(e) {
-        if(!(this instanceof HTMLInputElement))
+    input.onchange = function (e) {
+        if (!(this instanceof HTMLInputElement))
             throw new Error('Unexpected type for this');
         let files = this.files;
-        for(let i = 0; i < files.length; i++) {
+        for (let i = 0; i < files.length; i++) {
             try {
                 serverConnection.sendFile(id, files[i]);
-            } catch(e) {
+            } catch (e) {
                 console.error(e);
                 displayError(e);
             }
@@ -3739,11 +3852,9 @@ commands.sendfile = {
     description: 'send a file (this will disclose your IP address)',
     f: (c, r) => {
         let p = parseCommand(r);
-        if(!p[0])
-            throw new Error(`/${c} requires parameters`);
+        if (!p[0]) throw new Error(`/${c} requires parameters`);
         let id = findUserId(p[0]);
-        if(!id)
-            throw new Error(`Unknown user ${p[0]}`);
+        if (!id) throw new Error(`Unknown user ${p[0]}`);
         sendFile(id);
     },
 };
@@ -3754,18 +3865,21 @@ commands.sendfile = {
  * @returns {Promise<number>}
  */
 async function relayTest() {
-    if(!serverConnection)
-        throw new Error('not connected');
+    if (!serverConnection) throw new Error('not connected');
     let conf = Object.assign({}, serverConnection.getRTCConfiguration());
     conf.iceTransportPolicy = 'relay';
     let pc1 = new RTCPeerConnection(conf);
     let pc2 = new RTCPeerConnection(conf);
-    pc1.onicecandidate = e => {e.candidate && pc2.addIceCandidate(e.candidate);};
-    pc2.onicecandidate = e => {e.candidate && pc1.addIceCandidate(e.candidate);};
+    pc1.onicecandidate = (e) => {
+        e.candidate && pc2.addIceCandidate(e.candidate);
+    };
+    pc2.onicecandidate = (e) => {
+        e.candidate && pc1.addIceCandidate(e.candidate);
+    };
     try {
         return await new Promise(async (resolve, reject) => {
             let d1 = pc1.createDataChannel('loopbackTest');
-            d1.onopen = e => {
+            d1.onopen = (e) => {
                 d1.send(Date.now().toString());
             };
 
@@ -3776,19 +3890,17 @@ async function relayTest() {
             await pc2.setLocalDescription(answer);
             await pc1.setRemoteDescription(pc2.localDescription);
 
-            pc2.ondatachannel = e => {
+            pc2.ondatachannel = (e) => {
                 let d2 = e.channel;
-                d2.onmessage = e => {
+                d2.onmessage = (e) => {
                     let t = parseInt(e.data);
-                    if(isNaN(t))
-                        reject(new Error('corrupt data'));
-                    else
-                        resolve(Date.now() - t);
-                }
-            }
+                    if (isNaN(t)) reject(new Error('corrupt data'));
+                    else resolve(Date.now() - t);
+                };
+            };
 
             setTimeout(() => reject(new Error('timeout')), 5000);
-        })
+        });
     } finally {
         pc1.close();
         pc2.close();
@@ -3802,35 +3914,33 @@ commands['relay-test'] = {
             let s = Date.now();
             let rtt = await relayTest();
             let e = Date.now();
-            localMessage(`Relay test successful in ${e-s}ms, RTT ${rtt}ms`);
-        } catch(e) {
+            localMessage(`Relay test successful in ${e - s}ms, RTT ${rtt}ms`);
+        } catch (e) {
             localMessage(`Relay test failed: ${e}`);
         }
-    }
-}
+    },
+};
 
 /**
  * @param {unknown} message
  * @param {string} [level]
  */
 function displayError(message, level) {
-    if(message instanceof Error)
-        message = message.message;
-    if(!level)
-        level = "error";
+    if (message instanceof Error) message = message.message;
+    if (!level) level = 'error';
     let position = 'center';
     let gravity = 'top';
 
-    switch(level) {
-    case "info":
-        position = 'right';
-        gravity = 'bottom';
-        break;
-    case "warning":
-        break;
-    case "kicked":
-        level = "error";
-        break;
+    switch (level) {
+        case 'info':
+            position = 'right';
+            gravity = 'bottom';
+            break;
+        case 'warning':
+            break;
+        case 'kicked':
+            level = 'error';
+            break;
     }
 
     /** @ts-ignore */
@@ -3848,55 +3958,52 @@ function displayError(message, level) {
  * @param {unknown} message
  */
 function displayWarning(message) {
-    return displayError(message, "warning");
+    return displayError(message, 'warning');
 }
 
 /**
  * @param {unknown} message
  */
 function displayMessage(message) {
-    return displayError(message, "info");
+    return displayError(message, 'info');
 }
 
-document.getElementById('loginform').onsubmit = async function(e) {
+document.getElementById('loginform').onsubmit = async function (e) {
     e.preventDefault();
 
     let form = this;
-    if(!(form instanceof HTMLFormElement))
+    if (!(form instanceof HTMLFormElement))
         throw new Error('Bad type for loginform');
 
     setVisibility('passwordform', true);
 
-    if(getInputElement('presentboth').checked)
-        presentRequested = 'both';
-    else if(getInputElement('presentmike').checked)
-        presentRequested = 'mike';
-    else
-        presentRequested = null;
+    if (getInputElement('presentboth').checked) presentRequested = 'both';
+    else if (getInputElement('presentmike').checked) presentRequested = 'mike';
+    else presentRequested = null;
     getInputElement('presentoff').checked = true;
 
     // Connect to the server, gotConnected will join.
     serverConnect();
 };
 
-
 /** @type{CameraTest} */
 let cameraTest = null;
 
-document.getElementById('test-camera').ontoggle = async function(e) {
+document.getElementById('test-camera').ontoggle = async function (e) {
     let details = this;
-    if(!(details instanceof HTMLDetailsElement))
+    if (!(details instanceof HTMLDetailsElement))
         throw new Error('Unexpected type for this');
-    if(details.open) {
-        if(!cameraTest) {
+    if (details.open) {
+        if (!cameraTest) {
             let video = document.getElementById('test-video');
-            if(!(video instanceof HTMLVideoElement))
+            if (!(video instanceof HTMLVideoElement))
                 throw new Error('Bad type for video');
             let canvas = document.getElementById('test-fft');
-            if(!(canvas instanceof HTMLCanvasElement))
+            if (!(canvas instanceof HTMLCanvasElement))
                 throw new Error('Bad type for FFT canvas');
             cameraTest = new CameraTest(
-                video, canvas,
+                video,
+                canvas,
                 getSelectElement('test-videoselect'),
                 getSelectElement('test-audioselect'),
             );
@@ -3904,11 +4011,10 @@ document.getElementById('test-camera').ontoggle = async function(e) {
         try {
             await cameraTest.setMediaChoices();
             cameraTest.reflectSettings();
-            if(cameraTest.video.srcObject != null)
-                return;
+            if (cameraTest.video.srcObject != null) return;
             await cameraTest.setStream(true);
             await cameraTest.setAnalyser();
-        } catch(e) {
+        } catch (e) {
             displayError(e);
             await cameraTest.stopStream();
             await cameraTest.setAnalyser();
@@ -3917,86 +4023,81 @@ document.getElementById('test-camera').ontoggle = async function(e) {
         try {
             await cameraTest.stopStream();
             await cameraTest.setAnalyser();
-        } catch(e) {
+        } catch (e) {
             displayError(e);
         }
     }
-}
+};
 
-getSelectElement('test-videoselect').onchange = async function(e) {
+getSelectElement('test-videoselect').onchange = async function (e) {
     e.preventDefault();
-    if(!(this instanceof HTMLSelectElement))
+    if (!(this instanceof HTMLSelectElement))
         throw new Error('Unexpected type for this');
-    if(!cameraTest)
-        throw new Error('Camera test not started');
-    updateSettings({video: this.value});
+    if (!cameraTest) throw new Error('Camera test not started');
+    updateSettings({ video: this.value });
     try {
         await cameraTest.setStream();
         await cameraTest.setAnalyser();
-    } catch(e) {
+    } catch (e) {
         displayError(e);
     }
 };
 
-getSelectElement('test-audioselect').onchange = async function(e) {
+getSelectElement('test-audioselect').onchange = async function (e) {
     e.preventDefault();
-    if(!(this instanceof HTMLSelectElement))
+    if (!(this instanceof HTMLSelectElement))
         throw new Error('Unexpected type for this');
-    if(!cameraTest)
-        throw new Error('Camera test not started');
-    updateSettings({audio: this.value});
+    if (!cameraTest) throw new Error('Camera test not started');
+    updateSettings({ audio: this.value });
     try {
         await cameraTest.setStream();
         await cameraTest.setAnalyser();
-    } catch(e) {
+    } catch (e) {
         displayError(e);
     }
 };
 
-document.getElementById('disconnectbutton').onclick = function(e) {
+document.getElementById('disconnectbutton').onclick = function (e) {
     serverConnection.close();
     closeNav();
 };
 
 function openNav() {
-    document.getElementById("sidebarnav").classList.add("is-open");
+    document.getElementById('sidebarnav').classList.add('is-open');
 }
 
 function closeNav() {
-    document.getElementById("sidebarnav").classList.remove("is-open");
+    document.getElementById('sidebarnav').classList.remove('is-open');
 }
 
-document.getElementById('sidebarCollapse').onclick = function(e) {
-    document.getElementById("left-sidebar").classList.toggle("active");
-    document.getElementById("mainrow").classList.toggle("full-width-active");
+document.getElementById('sidebarCollapse').onclick = function (e) {
+    document.getElementById('left-sidebar').classList.toggle('active');
+    document.getElementById('mainrow').classList.toggle('full-width-active');
 };
 
-document.getElementById('openside').onclick = function(e) {
+document.getElementById('openside').onclick = function (e) {
     e.preventDefault();
-    if(document.getElementById("sidebarnav").classList.contains("is-open"))
+    if (document.getElementById('sidebarnav').classList.contains('is-open'))
         closeNav();
-    else
-        openNav();
+    else openNav();
 };
 
-
-document.getElementById('clodeside').onclick = function(e) {
+document.getElementById('clodeside').onclick = function (e) {
     e.preventDefault();
     closeNav();
 };
 
-document.getElementById('show-video').onclick = function(e) {
+document.getElementById('show-video').onclick = function (e) {
     e.preventDefault();
     setVisibility('video-container', true);
     setVisibility('show-video', false);
 };
 
 async function serverConnect() {
-    if(serverConnection && serverConnection.socket)
-        serverConnection.close();
+    if (serverConnection && serverConnection.socket) serverConnection.close();
     serverConnection = new ServerConnection();
     serverConnection.onconnected = gotConnected;
-    serverConnection.onerror = function(e) {
+    serverConnection.onerror = function (e) {
         console.error(e);
         displayError(e);
     };
@@ -4009,14 +4110,14 @@ async function serverConnect() {
     serverConnection.onfiletransfer = gotFileTransfer;
 
     let url = groupStatus.endpoint;
-    if(!url) {
-        console.warn("no endpoint in status");
+    if (!url) {
+        console.warn('no endpoint in status');
         url = `ws${location.protocol === 'https:' ? 's' : ''}://${location.host}/ws`;
     }
 
     try {
         await serverConnection.connect(url);
-    } catch(e) {
+    } catch (e) {
         console.error(e);
         displayError(`Couldn't connect to ${url}: ${e.message}`);
     }
@@ -4024,28 +4125,26 @@ async function serverConnect() {
 
 async function start() {
     try {
-        let r = await fetch(".status")
-        if(!r.ok)
-            throw new Error(`${r.status} ${r.statusText}`);
-        groupStatus = await r.json()
-    } catch(e) {
+        let r = await fetch('.status');
+        if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+        groupStatus = await r.json();
+    } catch (e) {
         console.error(e);
         displayWarning("Couldn't fetch status: " + e);
         groupStatus = {};
     }
 
-    if(groupStatus.name) {
+    if (groupStatus.name) {
         group = groupStatus.name;
     } else {
-        console.warn("no group name in status");
+        console.warn('no group name in status');
         group = decodeURIComponent(
             location.pathname.replace(/^\/[a-z]*\//, '').replace(/\/$/, ''),
         );
     }
 
     // Disable simulcast on Firefox by default, it's buggy.
-    if(isFirefox())
-        getSelectElement('simulcastselect').value = 'off';
+    if (isFirefox()) getSelectElement('simulcastselect').value = 'off';
 
     let parms = new URLSearchParams(window.location.search);
     setTitle(groupStatus.displayName || capitalise(group));
@@ -4054,27 +4153,30 @@ async function start() {
     await setMediaChoices(false);
     reflectSettings();
 
-    if(parms.has('token')) {
+    if (parms.has('token')) {
         token = parms.get('token');
         parms.delete('token'); // don't broadcast the login token as user data
     }
     queryData = Object.fromEntries(parms);
 
     let savedRole = getSettings().role;
-    let initialRole = validRoles.includes(queryData.role) ?
-        queryData.role :
-        (parms.has('role') ? 'remote' :
-         (validRoles.includes(savedRole) ? savedRole : 'remote'));
+    let initialRole = validRoles.includes(queryData.role)
+        ? queryData.role
+        : parms.has('role')
+          ? 'remote'
+          : validRoles.includes(savedRole)
+            ? savedRole
+            : 'remote';
     setRole(initialRole, false);
     updateRoleURL();
 
-    if(token || getResumeTicket()) {
+    if (token || getResumeTicket()) {
         await serverConnect();
-    } else if(groupStatus.authPortal) {
+    } else if (groupStatus.authPortal) {
         window.location.href = groupStatus.authPortal;
     } else {
         setVisibility('login-container', true);
-        document.getElementById('username').focus()
+        document.getElementById('username').focus();
     }
     setViewportHeight();
 }
