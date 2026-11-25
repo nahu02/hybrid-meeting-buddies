@@ -879,6 +879,66 @@ body.role-buddyDevice.assigned #peers .peer-fullscreen .media {
     visibility: visible !important;
 }
 
+/* On an assigned remote's screen, give the buddy's room camera the leading
+   row (landscape) or leading column (portrait); other streams remain smaller. */
+body.role-remote.assigned #peers .peer-buddy-priority,
+body.role-remote.assigned #peers .peer:not(.peer-buddy-priority):not(.peer-hidden) {
+    min-width: 0;
+    min-height: 0;
+    margin: 0;
+    display: grid;
+    place-items: center;
+    overflow: hidden;
+}
+
+body.role-remote.assigned #peers .peer-buddy-priority .media,
+body.role-remote.assigned #peers .peer:not(.peer-buddy-priority) .media {
+    width: 100%;
+    height: 100%;
+    max-width: 100%;
+    max-height: none;
+    padding: 0;
+    object-fit: contain;
+}
+
+body.role-buddyDevice.assigned #peers .peer-buddy-preview {
+    position: absolute;
+    z-index: 3;
+    top: auto;
+    right: 12px;
+    bottom: 12px;
+    left: auto;
+    width: 25%;
+    height: 25%;
+    min-width: 88px;
+    min-height: 64px;
+    max-width: 240px;
+    max-height: 180px;
+    margin: 0;
+    display: grid !important;
+    place-items: center;
+    border: 2px solid rgb(255 255 255 / 85%);
+    border-radius: 8px;
+    background: #000;
+    box-shadow: 0 3px 14px rgb(0 0 0 / 55%);
+    overflow: hidden;
+}
+
+body.role-buddyDevice.assigned #peers .peer-buddy-preview .media {
+    width: 100%;
+    height: 100%;
+    max-width: 100%;
+    max-height: none;
+    padding: 0;
+    object-fit: contain;
+}
+
+body.role-buddyDevice.assigned #peers .peer-buddy-preview > .video-controls,
+body.role-buddyDevice.assigned #peers .peer-buddy-preview > .top-video-controls,
+body.role-buddyDevice.assigned #peers .peer-buddy-preview > .label {
+    display: none !important;
+}
+
 .media {
     width: 100%;
     max-height: calc(var(--vh, 1vh) * 100 - 76px);

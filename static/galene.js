@@ -163,6 +163,16 @@ function updateRoleView() {
         let videoActive = stream?.stream
             ?.getVideoTracks()
             .some((t) => t.readyState === 'live' && !t.muted);
+        peer.classList.remove('peer-buddy-priority', 'peer-buddy-preview');
+        if (
+            role === 'remote' &&
+            assigned &&
+            down &&
+            down.source === data.assignedTo &&
+            down.label === 'camera' &&
+            videoActive
+        )
+            peer.classList.add('peer-buddy-priority');
         let hideRoleCamera =
             stream?.label === 'camera' &&
             ((role === 'leader' &&
@@ -177,6 +187,19 @@ function updateRoleView() {
             stream?.label === 'camera' && !videoActive,
         );
         if (role === 'buddyDevice') {
+            let localCamera =
+                up &&
+                up.label === 'camera' &&
+                up.stream?.getVideoTracks().some(
+                    (t) => t.readyState === 'live',
+                );
+            if (assigned && localCamera) {
+                // Retain the outgoing camera as a small confidence preview
+                // over the remote participant's full-screen feed.
+                peer.classList.remove('peer-hidden', 'peer-fullscreen');
+                peer.classList.add('peer-buddy-preview');
+                continue;
+            }
             // The buddy device has a single video surface: its assigned
             // remote. Never keep self previews, other peers, or hidden grid
             // cells in this view.
@@ -194,6 +217,19 @@ function updateRoleView() {
     }
 
     if (role === 'buddyDevice' && assigned) {
+        let selfCamera = Object.values(serverConnection.up).find(
+            (c) =>
+                c.label === 'camera' &&
+                c.stream?.getVideoTracks().some(
+                    (t) => t.readyState === 'live',
+                ),
+        );
+        if (
+            selfCamera &&
+            !document.getElementById('peer-' + selfCamera.localId)
+        )
+            setMedia(selfCamera, shouldMirrorCamera(), null);
+
         // A video stream may have arrived while the role was still
         // unassigned. Render it now if its video track is live.
         let target = Object.values(serverConnection.down).find(
@@ -1944,7 +1980,7 @@ async function setMedia(c, mirror, video) {
         let videoReady =
             c.stream &&
             c.stream.getVideoTracks().some((t) => t.readyState === 'live');
-        if (!assignedTo || c.up || c.source !== assignedTo || !videoReady)
+        if (!c.up && (!assignedTo || c.source !== assignedTo || !videoReady))
             return;
     }
 
@@ -1967,6 +2003,11 @@ async function setMedia(c, mirror, video) {
         // Galene's generic "display all peers" preference.
         div.classList.remove('peer-hidden');
         div.classList.add('peer-fullscreen');
+    }
+    if (joinedRole() === 'buddyDevice' && c.up && c.label === 'camera') {
+        div.classList.remove('peer-hidden');
+        if (ownUserData().assignedTo)
+            div.classList.add('peer-buddy-preview');
     }
 
     let media =
@@ -2332,6 +2373,77 @@ function resizePeers() {
         if (media instanceof HTMLMediaElement)
             media.style.removeProperty('max-height');
         return;
+    }
+    for (let peer of peers.children) {
+        peer.style.gridRow = '';
+        peer.style.gridColumn = '';
+        for (let media of peer.querySelectorAll('video.media')) {
+            media.style.removeProperty('height');
+            media.style.removeProperty('max-height');
+            media.style.removeProperty('padding-bottom');
+            media.style.removeProperty('object-fit');
+        }
+    }
+    let ownData = ownUserData();
+    let priorityPeer =
+        joinedRole() === 'remote' && ownData.assignedTo
+            ? peers.querySelector('.peer-buddy-priority:not(.peer-hidden)')
+            : null;
+    let priorityVideo = priorityPeer?.querySelector('video.media');
+    if (
+        priorityVideo instanceof HTMLVideoElement &&
+        priorityVideo.videoWidth > 0 &&
+        priorityVideo.videoHeight > 0
+    ) {
+        let visiblePeers = Array.from(
+            peers.querySelectorAll('.peer:not(.peer-hidden)'),
+        );
+        let otherPeers = visiblePeers.filter((peer) => peer !== priorityPeer);
+        if (otherPeers.length > 0) {
+            let landscape = priorityVideo.videoWidth >= priorityVideo.videoHeight;
+            for (let peer of visiblePeers) {
+                peer.style.gridRow = '';
+                peer.style.gridColumn = '';
+                for (let media of peer.querySelectorAll('video.media')) {
+                    media.style.maxHeight = 'none';
+                    media.style.paddingBottom = '0';
+                    media.style.height = '100%';
+                    media.style.objectFit = 'contain';
+                }
+            }
+            if (landscape) {
+                let columns = Math.min(3, otherPeers.length);
+                let rows = Math.ceil(otherPeers.length / columns);
+                peers.style.gridTemplateColumns =
+                    `repeat(${columns}, minmax(0, 1fr))`;
+                peers.style.gridTemplateRows =
+                    `minmax(0, 2fr) repeat(${rows}, minmax(0, 1fr))`;
+                priorityPeer.style.gridColumn = '1 / -1';
+                priorityPeer.style.gridRow = '1';
+                otherPeers.forEach((peer) => {
+                    peer.style.gridColumn = 'auto';
+                    peer.style.gridRow = 'auto';
+                });
+            } else {
+                peers.style.gridTemplateColumns =
+                    'minmax(0, 2fr) minmax(0, 1fr)';
+                peers.style.gridTemplateRows =
+                    `repeat(${otherPeers.length}, minmax(0, 1fr))`;
+                priorityPeer.style.gridColumn = '1';
+                priorityPeer.style.gridRow = `1 / span ${otherPeers.length}`;
+                otherPeers.forEach((peer, index) => {
+                    peer.style.gridColumn = '2';
+                    peer.style.gridRow = String(index + 1);
+                });
+            }
+            return;
+        }
+    }
+    peers.style.gridTemplateColumns = '';
+    peers.style.gridTemplateRows = '';
+    for (let peer of peers.children) {
+        peer.style.gridRow = '';
+        peer.style.gridColumn = '';
     }
     let count =
         Object.keys(serverConnection.up).length +
